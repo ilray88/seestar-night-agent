@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+
+{% block header %}
+    <div class="page-hero">
+        <div>
+            <p class="page-kicker">Telemetry</p>
+            <h1 class="page-title">{% block title %}Stats{% endblock %}</h1>
+            <p class="page-subtitle">Current telescope measurements and health metrics.</p>
+        </div>
+        <div class="panel-muted">Auto refresh every 15s</div>
+    </div>
+{% endblock %}
+
+{% block content %}
+    <div id="stats-content"
+         class="no-htmx-fx"
+         hx-get="{{ root }}/stats-content"
+         hx-trigger="load, every 15s"
+         hx-swap="innerHTML">
+        {% include 'partials/stats_content.html' with context %}
+    </div>
+{% endblock %}

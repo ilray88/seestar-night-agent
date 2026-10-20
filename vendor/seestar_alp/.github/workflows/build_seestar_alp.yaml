@@ -1,0 +1,226 @@
+# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
+
+name: Python package
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build-win:
+    runs-on: "windows-latest"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Download astroquery data
+        run: |
+          $url = "https://raw.githubusercontent.com/astropy/astroquery/main/astroquery/simbad/data/query_criteria_fields.json"
+          $outputDir = "downloaded_data/astroquery/simbad/data"
+          New-Item -ItemType Directory -Path $outputDir -Force
+          Invoke-WebRequest -Uri $url -OutFile "$outputDir/query_criteria_fields.json"
+          echo "Downloaded latest data file"
+
+      - name: run pyinstaller for seestar_alp
+        id: create_seestar_alp
+        run: |
+          $git_version = $(git describe --tags --always --dirty --exclude='*[0-9]-g*' --match='v*')
+          echo $git_version > ./version.txt
+          pyinstaller --name="seestar_alp" `
+          --add-data="device/config.toml.example;." --add-data="./version.txt;." --add-data="front/citation;astroquery" --add-data="front/templates;front/templates" --add-data="front/public;front/public" `
+          --add-data="front/planning.json.example;." --add-data="front/csc_sites.json;." --add-data="data/de440s.bsp;data/de440s.bsp" --add-data="data/alp.dat:data/alp.dat" `
+          --add-data="downloaded_data/astroquery/simbad/data/query_criteria_fields.json;astroquery/simbad/data" `
+          --paths=./front --paths=./device `
+          --collect-all=geomag `
+          root_app.py
+          Compress-Archive -Path ./dist/seestar_alp/* -DestinationPath win_seestar_alp.zip
+          echo "device_script_result=win_seestar_alp.zip" >> $env:GITHUB_ENV
+          echo "device_script_version=$(echo $git_version)" >> $env:GITHUB_ENV
+          if ($git_version -match ".*[0-9]-g.*") {
+            echo "device_script_prerelease=true" >> $env:GITHUB_ENV
+          } else {
+            echo "device_script_prerelease=false" >> $env:GITHUB_ENV
+          }
+        shell: pwsh
+
+      - name: Display Result
+        run: echo "The script result is ${{ env.device_script_result }}"
+        shell: pwsh
+
+      - name: Upload Result as Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.device_script_result }}
+          tag_name: ${{ env.device_script_version }}
+          prerelease: ${{ env.device_script_prerelease }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-MacOS-arm64:
+    runs-on: "macos-26"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Download astroquery data
+        run: |
+          url="https://raw.githubusercontent.com/astropy/astroquery/main/astroquery/simbad/data/query_criteria_fields.json"
+          outputDir="downloaded_data/astroquery/simbad/data"
+          mkdir -p "${outputDir}"
+          curl -s -o "${outputDir}/query_criteria_fields.json" "${url}"
+          echo "Downloaded latest data file"
+
+      - name: run pyinstaller for device
+        id: create_device
+        run: |
+          git_version=$(git describe --tags --always --dirty --exclude='*[0-9]-g*' --match='v*')
+          echo $git_version > ./version.txt
+          pyinstaller --name="seestar_alp" --target-arch arm64 --onedir \
+          --add-data="device/config.toml.example:." --add-data="./version.txt:." --add-data="front/CITATION:astroquery" --add-data="front/templates:front/templates" --add-data="front/public:front/public" \
+          --add-data="front/planning.json.example:." --add-data="front/csc_sites.json:." --add-data="data/de440s.bsp:data/de440s.bsp"  --add-data="data/alp.dat:data/alp.dat" \
+          --add-data="downloaded_data/astroquery/simbad/data/query_criteria_fields.json:astroquery/simbad/data" \
+          --paths=./front --paths=./device \
+          --collect-all=geomag \
+          root_app.py
+          cd dist
+          zip -r ../MacOS_arm64_seestar_alp.zip ./seestar_alp/*
+          echo "device_script_result=MacOS_arm64_seestar_alp.zip" >> $GITHUB_ENV
+          echo "device_script_version=$(echo $git_version)" >> $GITHUB_ENV
+          if [[ $git_version =~ .*[0-9]*-g.* ]]; then
+            echo "device_script_prerelease=true"  >> $GITHUB_ENV
+          else
+            echo "device_script_prerelease=false"  >> $GITHUB_ENV
+          fi
+        shell: bash
+
+      - name: Display Result
+        run: echo "The script result is ${{ env.device_script_result }}"
+        shell: bash
+
+      - name: Upload Result as Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.device_script_result }}
+          tag_name: ${{ env.device_script_version }}
+          prerelease: ${{ env.device_script_prerelease }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+
+  build-linux-deb:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64, armhf]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: sudo apt-get install -y --no-install-recommends rsync python3-pip
+
+      - name: Build .deb (${{ matrix.arch }})
+        run: |
+          ARCH=${{ matrix.arch }} ./linux/deb/build-deb.sh
+          git_version=$(git describe --tags --always --exclude='*[0-9]-g*' --match='v*')
+          echo "deb_version=${git_version}" >> $GITHUB_ENV
+          if [[ $git_version =~ .*[0-9]*-g.* ]]; then
+            echo "deb_prerelease=true"  >> $GITHUB_ENV
+          else
+            echo "deb_prerelease=false" >> $GITHUB_ENV
+          fi
+
+      - name: Upload .deb as release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: seestar-alp_*_${{ matrix.arch }}.deb
+          tag_name: ${{ env.deb_version }}
+          prerelease: ${{ env.deb_prerelease }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+
+  build-MacOS-x86:
+    runs-on: "macos-26-intel"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Download astroquery data
+        run: |
+          url="https://raw.githubusercontent.com/astropy/astroquery/main/astroquery/simbad/data/query_criteria_fields.json"
+          outputDir="downloaded_data/astroquery/simbad/data"
+          mkdir -p "${outputDir}"
+          curl -s -o "${outputDir}/query_criteria_fields.json" "${url}"
+          echo "Downloaded latest data file"
+
+      - name: run pyinstaller for device
+        id: create_device
+        run: |
+          git_version=$(git describe --tags --always --dirty --exclude='*[0-9]-g*' --match='v*')
+          echo $git_version > ./version.txt
+          pyinstaller --name="seestar_alp" --target-arch x86_64 --onedir \
+          --add-data="device/config.toml.example:." --add-data="./version.txt:." --add-data="front/CITATION:astroquery" --add-data="front/templates:front/templates" --add-data="front/public:front/public" \
+          --add-data="front/planning.json.example:." --add-data="front/csc_sites.json:." --add-data="data/de440s.bsp:data/de440s.bsp"  --add-data="data/alp.dat:data/alp.dat" \
+          --add-data="downloaded_data/astroquery/simbad/data/query_criteria_fields.json:astroquery/simbad/data" \
+          --paths=./front --paths=./device \
+          --collect-all=geomag \
+          root_app.py
+          cd dist
+          zip -r ../MacOS_x86_seestar_alp.zip ./seestar_alp/*
+          echo "device_script_result=MacOS_x86_seestar_alp.zip" >> $GITHUB_ENV
+          echo "device_script_version=$(echo $git_version)" >> $GITHUB_ENV
+          if [[ $git_version =~ .*[0-9]*-g.* ]]; then
+            echo "device_script_prerelease=true"  >> $GITHUB_ENV
+          else
+            echo "device_script_prerelease=false"  >> $GITHUB_ENV
+          fi
+        shell: bash
+
+      - name: Display Result
+        run: echo "The script result is ${{ env.device_script_result }}"
+        shell: bash
+
+      - name: Upload Result as Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.device_script_result }}
+          tag_name: ${{ env.device_script_version }}
+          prerelease: ${{ env.device_script_prerelease }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}

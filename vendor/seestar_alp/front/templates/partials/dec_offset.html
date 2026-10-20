@@ -1,0 +1,197 @@
+<style>
+  #dec-offset-container {
+    position: relative;
+    width: 400px;
+    height: 344px;
+    padding: 0;
+    border: none;
+    box-sizing: border-box;
+  }
+
+  #dec-offset-container label {
+    position: absolute;
+    cursor: pointer;
+    color: white;
+    font-weight: bold;
+    transform: translate(-50%, -50%);
+    user-select: none;
+  }
+
+  #dec-offset-container label input[type="radio"]:checked + span {
+    color: red;
+    font-weight: bold;
+  }
+
+  .dec-offset-arc-image {
+    position: absolute;
+    width: 40px;
+    height: 40px;
+    transform-origin: 50% 100%;
+    transform: translateX(-50%) rotate(0deg);
+    transition: transform 0.3s ease;
+    pointer-events: none;
+    left: 50%;
+    top: 55%;
+  }
+
+  #dec-offset-container input[type="radio"] {
+    margin-right: 6px;
+  }
+
+  #dec-offset-arrow {
+    position: absolute;
+    left: 50%;
+    transform-origin: 50% 90%;
+    transform: translateX(-50%) rotate(0deg);
+  }
+
+  .dec-offset-direction-label {
+    position: absolute;
+    bottom: 10px;
+    color: white;
+    font-size: 18px;
+    font-family: sans-serif;
+    user-select: none;
+  }
+
+  .dec-offset-left-label {
+    left: 10px;
+    text-align: left;
+  }
+
+  .dec-offset-right-label {
+    right: 10px;
+    text-align: right;
+  }
+</style>
+
+<script>
+(() => {
+  const MODAL_ID = "decOffsetModal";
+  const STARTUP_FORM_ID = "startup-sequence-form";
+  const DEFAULT_DEC_OFFSET = "3";
+
+  let decOffsetModal = document.getElementById(MODAL_ID);
+
+  if (!decOffsetModal) {
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      `
+      <div class="modal fade" id="decOffsetModal" tabindex="-1"
+           aria-labelledby="decOffsetModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered" role="document" style="max-width: 400px; width: 400px;">
+          <div class="modal-content bg-dark text-white" style="height: 400px; overflow: visible;">
+            <div class="modal-header">
+              <h5 class="modal-title" id="decOffsetModalLabel">DEC Offset</h5>
+              <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-0 d-flex justify-content-center align-items-start" style="height: calc(400px - 56px); position: relative; overflow: visible;">
+              <div id="dec-offset-container">
+                <img id="dec-offset-arrow" src="/public/S50.png" class="dec-offset-arc-image" />
+                <div class="dec-offset-direction-label dec-offset-left-label">← South</div>
+                <div class="dec-offset-direction-label dec-offset-right-label">North →</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      `
+    );
+    decOffsetModal = document.getElementById(MODAL_ID);
+  }
+
+  const container = decOffsetModal.querySelector("#dec-offset-container");
+  const arrow = decOffsetModal.querySelector("#dec-offset-arrow");
+  const startupForm = document.getElementById(STARTUP_FORM_ID);
+  let radios = [];
+
+  function getSelectedOffset() {
+    if (decOffsetModal.dataset.selectedOffset) {
+      return decOffsetModal.dataset.selectedOffset;
+    }
+    if (startupForm) {
+      const selected = startupForm.querySelector('input[name="dec-offset"]:checked');
+      if (selected) {
+        return selected.value;
+      }
+    }
+    return DEFAULT_DEC_OFFSET;
+  }
+
+  function setupRadios() {
+    const total = 5;
+    const radius = 180;
+    const centerX = container.clientWidth / 2;
+    const centerY = container.clientHeight / 2 + 20;
+    const selectedOffset = getSelectedOffset();
+
+    radios = [];
+    container.querySelectorAll("label").forEach((label) => label.remove());
+
+    for (let i = 0; i < total; i++) {
+      const angle = -60 + (i * (120 / (total - 1)));
+      const rad = angle * (Math.PI / 180);
+
+      const x = centerX + radius * Math.sin(rad);
+      const y = centerY - radius * Math.cos(rad);
+
+      const label = document.createElement("label");
+      label.style.left = `${x}px`;
+      label.style.top = `${y}px`;
+
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "dec-offset";
+      radio.value = `${i + 1}`;
+      radio.id = `dec-offset-option-${i + 1}`;
+      if (startupForm) {
+        radio.setAttribute("form", STARTUP_FORM_ID);
+      }
+
+      label.appendChild(radio);
+      const textSpan = document.createElement("span");
+      textSpan.textContent = `${i + 1}`;
+      label.appendChild(textSpan);
+      container.appendChild(label);
+      radios.push(radio);
+    }
+
+    const selectedRadio = radios.find((r) => r.value === selectedOffset) || radios[2];
+    if (selectedRadio) {
+      selectedRadio.checked = true;
+      rotateToRadio(selectedRadio);
+      decOffsetModal.dataset.selectedOffset = selectedRadio.value;
+    }
+
+    arrow.style.left = "50%";
+    arrow.style.top = (centerY + radius - 150) + "px";
+    arrow.style.transformOrigin = "50% 90%";
+  }
+
+  function rotateToRadio(selectedRadio) {
+    const index = radios.indexOf(selectedRadio);
+    if (index === -1) {
+      return;
+    }
+    const angle = (index * 30) - 60;
+    arrow.style.transform = `translateX(-50%) rotate(${angle}deg)`;
+  }
+
+  function onContainerChange(event) {
+    const target = event.target;
+    if (!target || target.name !== "dec-offset") {
+      return;
+    }
+    rotateToRadio(target);
+    decOffsetModal.dataset.selectedOffset = target.value;
+  }
+
+  if (decOffsetModal.dataset.initialized !== "true") {
+    decOffsetModal.addEventListener("shown.bs.modal", setupRadios);
+    container.addEventListener("change", onContainerChange);
+    decOffsetModal.dataset.initialized = "true";
+    decOffsetModal.dataset.selectedOffset = DEFAULT_DEC_OFFSET;
+  }
+
+})();
+</script>

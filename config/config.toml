@@ -1,0 +1,99 @@
+title = "Alpaca Sample Driver (Rotator)"
+
+[network]
+# ip_address should not have to be changed
+ip_address = '127.0.0.1'           # Any address
+port = 5555
+imgport = 7556     # Imaging API port
+stport = 8090      #stellarium port
+sthost = 'localhost'  #stellarium hostname or IP
+rtsp_udp = true
+
+[webui_settings]
+uiport = 5432
+# light/dark theme
+uitheme = "dark" #all lower case
+#experimental = true
+confirm = true	# Enable/Disable the Commands page confirmation dialog
+# save_frames = false
+# save_frames_dir = "."
+
+# CSS overrides
+text_color = ""
+font_family = ""
+font_url = ""
+link_color = ""
+accent_color = ""
+
+[server]
+location = 'Anywhere on Earth'  # Anything you want here
+verbose_driver_exceptions = true
+
+[device]
+can_reverse = true
+step_size = 1.0
+steps_per_sec = 6
+verify_injection = true
+
+
+[seestar_initialization]
+save_good_frames = true
+save_all_frames = false             # including good and bad frames
+lat = 37.12                         # telescope location (lat), set to 0 if you want to guess from IP address
+long = -123.45                      # telescope location (long), set to 0 if you want to guess from IP address
+gain = 80
+exposure_length_preview_ms = 500
+exposure_length_stack_ms = 10000
+dither_enabled = true
+dither_length_pixel = 50
+dither_frequency = 10
+activate_LP_filter = false
+dew_heater_power = 0                # 0 - 100; 0 is off, 100 is max
+guest_mode_init = true
+battery_low_limit = 3
+dec_pos_index = 3       # 1-5; 1 = Dec Arm pointing North,  3 = Dec Arm pointing at Zenith, 5 = Dec Arm pointing South
+is_frame_calibrated = true
+
+# Interoperability Notice
+# This PEM key is used for interoperability purposes under 17 U.S.C. 1201(f) (the DMCA
+# interoperability exemption), enabling independent programs to interoperate with your Seestar
+# device via the challenge-response authentication required by firmware 7.18+.
+# The legality of key use varies by jurisdiction. You are solely responsible for ensuring
+# compliance with the laws of your region.
+interop_pem = "seestar_client_key.pem"  # relative to seestar_alp/ project root
+# Firmware 7.18+ (including your 9.75) REQUIRES this RSA interop key or the
+# scope silently ignores every command. Extract it from your own licensed ZWO
+# Seestar APK (see ../README-.md, step 2).
+# NOTE: keep this file ASCII-only - config.py reads it with the locale codec (GBK on zh-CN).
+
+[logging]
+log_level = 'INFO'   #'WARN' only if trouble    #'INFO' to output more logging      #'DEBUG' still more output
+log_prefix = ''
+log_to_stdout = false
+max_size_mb = 5
+num_keep_logs = 10
+log_events_in_info = true
+
+[[seestars]]
+name = "Seestar S30 Pro"
+# Preferred: put the scope in STATION mode (joins your home WiFi) and set a
+# DHCP reservation, then put that fixed IP here. "seestar.local" works only on
+# some networks and only while the scope's own AP is reachable.
+ip_address = "192.168.2.118"
+device_num = 1
+# Set to true when this entry points at the QEMU emulator (emulator/), not real
+# hardware, to suppress the firmware-auth warning banner. The emulator always
+# reports unverified -- its license signature check can only pass with a real
+# device's captured signing key, which can't be shipped in this repo (see
+# emulator/README.md) -- so the warning can never clear on its own there.
+#is_emulator = true
+#[[seestars]]
+#name = "Seestar Beta"
+#ip_address = "192.168.110.36"
+#device_num = 2
+
+
+#[[seestars]]
+#name = "Seestar Gamma"
+#ip_address = "192.168.110.238"
+#device_num = 3

@@ -1,0 +1,103 @@
+<div class="container mt-3">
+    {% if state.target_name %}
+        <div class="row border-bottom py-1 text-start">
+            <div class="col fw-bold">Target Name</div>
+            <div class="col">{{ state.target_name }}</div>
+        </div>
+    {% endif %}
+    <div class="row border-bottom py-1 text-start">
+        <div class="col fw-bold">State</div>
+        <div class="col">{{ state.state }}</div>
+    </div>
+    <div class="row border-bottom py-1 text-start">
+        <div class="col fw-bold">Mode</div>
+        <div class="col">{{ state.mode }}</div>
+    </div>
+    <div class="row border-bottom py-1 text-start">
+        <div class="col fw-bold">Stage</div>
+        <div class="col">{{ state.stage }}</div>
+    </div>
+    {#    {% if state.stage != "Stack" %}#}
+    {% if state.substage %}
+        <div class="row border-bottom py-1 text-start">
+            <div class="col fw-bold">Substage</div>
+            <div class="col">{{ state.substage }}</div>
+        </div>
+    {% endif %}
+    {% if state.substage_count %}
+        <div class="row border-bottom py-1 text-start">
+            <div class="col fw-bold">Substage Count</div>
+            <div class="col">{{ state.substage_count }}</div>
+        </div>
+    {% endif %}
+    {% if state.substage_position %}
+        <div class="row border-bottom py-1 text-start">
+            <div class="col fw-bold">Position</div>
+            <div class="col">{{ state.substage_position }}</div>
+        </div>
+    {% endif %}
+    {% if state.substage_percent %}
+        <div class="row border-bottom py-1 text-start">
+            <div class="col fw-bold">Percent</div>
+            <div class="col">{{ state.substage_percent }}</div>
+        </div>
+    {% endif %}
+    {#    <div class="row border-bottom py-1 text-start">#}
+    {#        <div class="col fw-bold">Substage Elapsed</div>#}
+    {#        <div class="col">{{ state.substage_elapsed }}</div>#}
+    {#    </div>#}
+    {#  Make the below conditional.... #}
+{#    <div class="row border-bottom py-1 text-start">#}
+{#        <div class="col fw-bold">Elapsed Time</div>#}
+{#        <div class="col">{{ state.lapse_ms }}</div>#}
+{#    </div>#}
+    {#    {% endif %}#}
+    <div class="row border-bottom py-1 text-start">
+        <div class="col fw-bold">RA</div>
+        <div class="col text-monospace">
+            {% if state.has_equ_coord %}
+                {{ state.ra | round(4) }}
+            {% else %}
+                --
+            {% endif %}
+        </div>
+    </div>
+    <div class="row border-bottom py-1 text-start">
+        <div class="col fw-bold">Dec</div>
+        <div class="col text-monospace">
+            {% if state.has_equ_coord %}
+                {{ state.dec | round(4) }}
+            {% else %}
+                --
+            {% endif %}
+        </div>
+    </div>
+    <div class="row border-bottom py-1 text-start">
+        <div class="col fw-bold">SNR</div>
+        <div class="col">
+            {% if state.snr is not none %}
+                {{ state.snr | round(2) }}
+            {% else %}
+                Calculating...
+            {% endif %}
+        </div>
+    </div>
+    {% if state.stats %}
+        <div class="row border-bottom py-1 text-start">
+            <div class="col fw-bold">Integration Time</div>
+            <div class="col text-monospace">{{ state.stats["integration_time"] }}</div>
+        </div>
+        <div class="row border-bottom py-1 text-start">
+            <div class="col fw-bold">Stacked Frames</div>
+            <div class="col text-monospace">{{ state.stats["stacked_frame"] }}</div>
+        </div>
+        <div class="row border-bottom py-1 text-start">
+            <div class="col fw-bold">Dropped Frames</div>
+            <div class="col text-monospace">{{ state.stats["dropped_frame"] }}</div>
+        </div>
+        <div class="row border-bottom py-1 text-start">
+            <div class="col fw-bold">Time On Target</div>
+            <div class="col text-monospace">{{ state.stats["elapsed"] }}</div>
+        </div>
+    {% endif %}
+</div>

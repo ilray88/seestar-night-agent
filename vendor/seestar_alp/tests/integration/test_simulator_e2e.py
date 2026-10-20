@@ -1,0 +1,1381 @@
+import collections
+import json
+import logging
+import socket
+import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import falcon
+from falcon import testing
+import pytest
+
+import front.app as front_app
+from device.config import Config
+
+
+SIMULATOR_SRC = Path(__file__).resolve().parents[2] / "simulator" / "src"
+if str(SIMULATOR_SRC) not in sys.path:
+    sys.path.insert(0, str(SIMULATOR_SRC))
+
+from listener import SocketListener  # noqa: E402
+
+
+pytestmark = pytest.mark.integration
+
+
+def _find_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _wait_for_tcp(host, port, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.2)
+            try:
+                s.connect((host, port))
+                return
+            except OSError:
+                time.sleep(0.05)
+    raise TimeoutError(f"simulator TCP port {host}:{port} did not open in time")
+
+
+def _send_tcp_command(host, port, payload):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(2.0)
+        s.connect((host, port))
+        s.sendall((json.dumps(payload) + "\r\n").encode("utf-8"))
+        raw = s.recv(8192).decode("utf-8")
+        line = raw.strip().splitlines()[0]
+        return json.loads(line)
+
+
+def _send_udp_command(host, port, payload):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.settimeout(2.0)
+        s.sendto(json.dumps(payload).encode("utf-8"), (host, port))
+        data, _ = s.recvfrom(4096)
+        return json.loads(data.decode("utf-8"))
+
+
+def _build_front_test_app():
+    app = falcon.App()
+    app.add_route("/{telescope_id:int}/", front_app.HomeTelescopeResource())
+    app.add_route("/{telescope_id:int}/settings", front_app.SettingsResource())
+    app.add_route("/{telescope_id:int}/stats", front_app.StatsResource())
+    app.add_route("/{telescope_id:int}/command", front_app.CommandResource())
+    app.add_route("/{telescope_id:int}/guestmode", front_app.GuestModeResource())
+    app.add_route("/{telescope_id:int}/live", front_app.LivePage())
+    app.add_route("/{telescope_id:int}/live/{mode}", front_app.LivePage())
+    app.add_route("/{telescope_id:int}/planning", front_app.PlanningResource())
+    app.add_route("/{telescope_id:int}/config", front_app.ConfigResource())
+    app.add_route("/{telescope_id:int}/platform-rpi", front_app.PlatformRpiResource())
+    app.add_route("/{telescope_id:int}/support", front_app.SupportResource())
+    app.add_route("/{telescope_id:int}/home-content", front_app.HomeContentResource())
+    app.add_route("/{telescope_id:int}/stats-content", front_app.StatsContentResource())
+    app.add_route(
+        "/{telescope_id:int}/guestmode-content", front_app.GuestModeContentResource()
+    )
+    app.add_route("/{telescope_id:int}/eventstatus", front_app.EventStatus())
+    app.add_route("/{telescope_id:int}/schedule", front_app.ScheduleResource())
+    app.add_route(
+        "/{telescope_id:int}/schedule/state", front_app.ScheduleToggleResource()
+    )
+    app.add_route("/{telescope_id:int}/startup", front_app.StartupResource())
+    app.add_route("/{telescope_id:int}/auth-status", front_app.AuthStatusResource())
+    app.add_route(
+        "/api/{telescope_id:int}/force_stop_goto", front_app.ForceStopGotoResource()
+    )
+    return app
+
+
+@pytest.fixture(scope="module")
+def simulator_server():
+    host = "127.0.0.1"
+    tcp_port = _find_free_port()
+    udp_port = _find_free_port()
+    logger = logging.getLogger("simulator-integration-test")
+    listener = SocketListener(logger, host=host, tcp_port=tcp_port, udp_port=udp_port)
+    thread = threading.Thread(target=listener._start_socket_listener, daemon=True)
+    thread.start()
+    _wait_for_tcp(host, tcp_port)
+    yield {"host": host, "tcp_port": tcp_port, "udp_port": udp_port}
+    listener.shutdown_event.set()
+    if listener.tcp_socket:
+        listener.tcp_socket.close()
+    if listener.udp_socket:
+        listener.udp_socket.close()
+    thread.join(timeout=2)
+
+
+@pytest.fixture
+def front_sim_bridge(monkeypatch, simulator_server):
+    host = simulator_server["host"]
+    tcp_port = simulator_server["tcp_port"]
+    schedule_state = {
+        "version": 1.0,
+        "Event": "Scheduler",
+        "schedule_id": "integration",
+        "list": collections.deque(),
+        "state": "stopped",
+        "is_stacking_paused": False,
+        "is_stacking": False,
+        "is_skip_requested": False,
+        "current_item_id": "",
+        "item_number": 9999,
+    }
+    forced_stack_set_error = {"enabled": False}
+    wrapped_method_sync = {"enabled": False}
+    set_stack_settings_only = {"enabled": False}
+    set_stack_settings_seen = {"called": False}
+    inject_eventstatus_none = {"enabled": False}
+    response_delay_ms = {"value": 0}
+
+    monkeypatch.setattr(
+        Config,
+        "seestars",
+        [{"device_num": 1, "name": "Seestar Alpha", "ip_address": "127.0.0.1"}],
+    )
+    monkeypatch.setattr(Config, "experimental", True)
+    monkeypatch.setattr(front_app, "check_api_state", lambda _tid: True)
+    monkeypatch.setattr(front_app, "get_listening_ip", lambda: "127.0.0.1")
+    monkeypatch.setattr(front_app, "get_twilight_times", lambda: {"sunset": "18:00"})
+    monkeypatch.setattr(
+        front_app,
+        "get_nearest_csc",
+        lambda: {"status_msg": "SUCCESS", "href": "", "full_img": ""},
+    )
+    monkeypatch.setattr(
+        front_app,
+        "get_planning_cards",
+        lambda: [{"card_name": "twilight_times", "planning_page_enable": True}],
+    )
+    front_app._context_cached.clear()
+    front_app._last_context_get_time.clear()
+    front_app.StatsContentResource._last_render_by_key.clear()
+    front_app.GuestModeContentResource._last_render_by_key.clear()
+    front_app.EventStatus._last_render_by_key.clear()
+
+    def _method_sync_call(method, params=None):
+        payload = {"id": int(time.time() * 1000) % 100000, "method": method}
+        if params is not None:
+            payload["params"] = params
+        return _send_tcp_command(host, tcp_port, payload)
+
+    def _do_action_device(action, dev_num, parameters, is_schedule=False):
+        if response_delay_ms["value"] > 0:
+            time.sleep(response_delay_ms["value"] / 1000.0)
+
+        if action == "method_sync":
+            method = parameters.get("method")
+            params = parameters.get("params")
+
+            if method == "set_setting" and isinstance(params, dict):
+                if forced_stack_set_error["enabled"] and "stack" in params:
+                    return {
+                        "ErrorNumber": 0,
+                        "Value": {
+                            "jsonrpc": "2.0",
+                            "method": "set_setting",
+                            "error": "unsupported",
+                            "code": -1,
+                            "id": 1,
+                        },
+                    }
+                if set_stack_settings_only["enabled"] and "stack" in params:
+                    return {
+                        "ErrorNumber": 0,
+                        "Value": {
+                            "jsonrpc": "2.0",
+                            "method": "set_setting",
+                            "error": "unsupported",
+                            "code": -1,
+                            "id": 1,
+                        },
+                    }
+
+            if method == "set_stack_setting" and set_stack_settings_only["enabled"]:
+                return {
+                    "ErrorNumber": 0,
+                    "Value": {
+                        "jsonrpc": "2.0",
+                        "method": "set_stack_setting",
+                        "error": "unsupported",
+                        "code": -1,
+                        "id": 1,
+                    },
+                }
+
+            if method == "set_stack_settings":
+                set_stack_settings_seen["called"] = True
+                method = "set_stack_setting"
+
+            rpc = _method_sync_call(method, params)
+            value = {"1": rpc} if wrapped_method_sync["enabled"] else rpc
+            return {"ErrorNumber": 0, "Value": value, "ErrorMessage": ""}
+
+        if action == "get_schedule":
+            return {"ErrorNumber": 0, "Value": schedule_state}
+        if action == "action_start_up_sequence":
+            schedule_state["state"] = "working"
+            return {"ErrorNumber": 0, "Value": {"state": "working"}}
+        if action == "create_schedule":
+            schedule_state["list"] = collections.deque()
+            schedule_state["state"] = "stopped"
+            return {"ErrorNumber": 0, "Value": schedule_state}
+        if action == "add_schedule_item":
+            item = {
+                "action": parameters.get("action", "noop"),
+                "params": parameters.get("params", {}),
+                "schedule_item_id": f"item-{len(schedule_state['list']) + 1}",
+            }
+            schedule_state["list"].append(item)
+            return {"ErrorNumber": 0, "Value": item}
+        if action == "start_scheduler":
+            schedule_state["state"] = "working"
+            return {"ErrorNumber": 0, "Value": schedule_state}
+        if action == "stop_scheduler":
+            schedule_state["state"] = "stopped"
+            return {"ErrorNumber": 0, "Value": schedule_state}
+        if action == "continue_scheduler":
+            schedule_state["state"] = "working"
+            return {"ErrorNumber": 0, "Value": schedule_state}
+        if action == "pause_scheduler":
+            schedule_state["state"] = "stopped"
+            return {"ErrorNumber": 0, "Value": schedule_state}
+        if action == "skip_scheduler_cur_item":
+            return {"ErrorNumber": 0, "Value": schedule_state}
+        if action == "get_event_state":
+            if inject_eventstatus_none["enabled"]:
+                return None
+            event_name = parameters.get("event_name")
+            if event_name == "scheduler":
+                return {
+                    "ErrorNumber": 0,
+                    "Value": {
+                        "result": {
+                            "Event": "Scheduler",
+                            "state": schedule_state["state"],
+                            "cur_scheduler_item": {},
+                            "item_number": 9999,
+                            "is_stacking": False,
+                            "is_stacking_paused": False,
+                            "result": 0,
+                        }
+                    },
+                }
+            if event_name == "Stack":
+                return {"ErrorNumber": 0, "Value": {"result": {}}}
+            if int(dev_num) == 0:
+                return {
+                    "ErrorNumber": 0,
+                    "Value": {
+                        "1": {
+                            "result": {
+                                "AutoGoto": {"Event": "AutoGoto", "state": "idle"},
+                                "PlateSolve": {"Event": "PlateSolve", "state": "idle"},
+                            }
+                        },
+                        "2": {
+                            "result": {
+                                "AutoGoto": {"Event": "AutoGoto", "state": "working"},
+                                "PlateSolve": {"Event": "PlateSolve", "state": "idle"},
+                            }
+                        },
+                    },
+                }
+            return {
+                "ErrorNumber": 0,
+                "Value": {
+                    "result": {
+                        "scheduler": {
+                            "Event": "Scheduler",
+                            "state": schedule_state["state"],
+                            "item_number": 9999,
+                            "cur_scheduler_item": {},
+                            "is_stacking": False,
+                            "is_stacking_paused": False,
+                            "result": 0,
+                        },
+                        "Client": {
+                            "is_master": True,
+                            "master_index": 0,
+                            "connected": ["client-a"],
+                        },
+                    }
+                },
+            }
+        return {"ErrorNumber": 0, "Value": {}}
+
+    monkeypatch.setattr(front_app, "do_action_device", _do_action_device)
+
+    client = testing.TestClient(_build_front_test_app())
+    return {
+        "client": client,
+        "host": host,
+        "tcp_port": tcp_port,
+        "schedule_state": schedule_state,
+        "forced_stack_set_error": forced_stack_set_error,
+        "wrapped_method_sync": wrapped_method_sync,
+        "set_stack_settings_only": set_stack_settings_only,
+        "set_stack_settings_seen": set_stack_settings_seen,
+        "inject_eventstatus_none": inject_eventstatus_none,
+        "response_delay_ms": response_delay_ms,
+    }
+
+
+def _settings_payload():
+    return {
+        "stack_lenhance": "false",
+        "stack_dither_pix": "10",
+        "stack_dither_interval": "2",
+        "stack_dither_enable": "true",
+        "exp_ms_stack_l": "10000",
+        "exp_ms_continuous": "500",
+        "focal_pos": "1500",
+        "auto_power_off": "false",
+        "auto_3ppa_calib": "true",
+        "frame_calib": "true",
+        "plan_target_af": "false",
+        "viewplan_gohome": "false",
+        "expert_mode": "false",
+        "save_discrete_frame": "false",
+        "save_discrete_ok_frame": "true",
+        "light_duration_min": "-1",
+        "stack_capt_type": "stack",
+        "stack_capt_num": "2",
+        "stack_brightness": "0.0",
+        "stack_contrast": "0.0",
+        "stack_saturation": "0.0",
+        "stack_dbe_enable": "false",
+        "heater_enable": "false",
+        "dark_mode": "false",
+        "stack_cont_capt": "false",
+        "stack_drizzle2x": "false",
+    }
+
+
+ALPACA_SERVER_PORT = 32323
+
+
+def _can_connect(host, port, timeout=2.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.2)
+            try:
+                s.connect((host, port))
+                return True
+            except OSError:
+                time.sleep(0.05)
+    return False
+
+
+def _cannot_connect(host, port, timeout=2.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.2)
+            try:
+                s.connect((host, port))
+            except OSError:
+                return True
+            time.sleep(0.05)
+    return False
+
+
+def test_alpaca_server_toggle_opens_and_closes_port(front_sim_bridge):
+    """Toggling alpaca_enable should start/stop a real listener on 32323,
+    mirroring the on-device ASCOM Alpaca REST server introduced in firmware
+    v3.3.1 that seestar_alp's settings page now exposes."""
+    payload = _settings_payload()
+    try:
+        payload["alpaca_enable"] = "true"
+        post = front_sim_bridge["client"].simulate_post("/1/settings", json=payload)
+        assert post.status_code == 200
+        assert _can_connect("127.0.0.1", ALPACA_SERVER_PORT)
+
+        payload["alpaca_enable"] = "false"
+        post = front_sim_bridge["client"].simulate_post("/1/settings", json=payload)
+        assert post.status_code == 200
+        assert _cannot_connect("127.0.0.1", ALPACA_SERVER_PORT)
+    finally:
+        payload["alpaca_enable"] = "false"
+        front_sim_bridge["client"].simulate_post("/1/settings", json=payload)
+
+
+def test_01_simulator_tcp_get_device_state(simulator_server):
+    resp = _send_tcp_command(
+        simulator_server["host"],
+        simulator_server["tcp_port"],
+        {"id": 100, "method": "get_device_state"},
+    )
+    assert resp.get("method") == "get_device_state"
+    assert resp.get("code") == 0
+    assert "device" in resp.get("result", {})
+
+
+def test_02_set_stack_settings_alias_compatibility(front_sim_bridge):
+    front_sim_bridge["set_stack_settings_only"]["enabled"] = True
+    payload = _settings_payload()
+    payload["save_discrete_frame"] = "true"
+    payload["save_discrete_ok_frame"] = "false"
+    resp = front_sim_bridge["client"].simulate_post("/1/settings", json=payload)
+    assert resp.status_code == 200
+    assert "Successfully Updated Settings." in resp.text
+    assert front_sim_bridge["set_stack_settings_seen"]["called"] is True
+
+
+def test_03_settings_http_round_trip(front_sim_bridge):
+    get_before = front_sim_bridge["client"].simulate_get("/1/settings")
+    assert get_before.status_code == 200
+    assert "Save Sub Frames" in get_before.text
+    assert "Save Failed Sub Frames" in get_before.text
+
+    payload = _settings_payload()
+    payload["save_discrete_frame"] = "true"
+    payload["save_discrete_ok_frame"] = "false"
+    post = front_sim_bridge["client"].simulate_post("/1/settings", json=payload)
+    assert post.status_code == 200
+    assert "Successfully Updated Settings." in post.text
+
+    after_stack = _send_tcp_command(
+        front_sim_bridge["host"],
+        front_sim_bridge["tcp_port"],
+        {"id": 104, "method": "get_stack_setting"},
+    )
+    result = after_stack.get("result", {})
+    assert result.get("save_discrete_frame") is True
+    assert result.get("save_discrete_ok_frame") is False
+    assert result.get("light_duration_min") == -1
+
+
+def test_04_federation_route_smoke(front_sim_bridge):
+    client = front_sim_bridge["client"]
+    for path in ["/0/", "/0/stats", "/0/command", "/0/settings"]:
+        resp = client.simulate_get(path)
+        assert resp.status_code == 200
+
+
+def test_05_htmx_fragment_endpoints(front_sim_bridge):
+    client = front_sim_bridge["client"]
+    paths = [
+        "/1/home-content",
+        "/1/stats-content",
+        "/1/guestmode-content",
+        "/1/eventstatus?action=goto",
+    ]
+    for path in paths:
+        resp = client.simulate_get(
+            path, headers={"HX-Current-URL": "http://localhost/1/goto"}
+        )
+        assert resp.status_code in (200, 204)
+        if resp.status_code == 200:
+            assert len(resp.text.strip()) > 0
+
+
+def test_06_live_page_mode_routing(front_sim_bridge):
+    client = front_sim_bridge["client"]
+    for path in ["/1/live", "/1/live/star", "/1/live/moon", "/1/live/scenery"]:
+        resp = client.simulate_get(path)
+        assert resp.status_code == 200
+        assert "Video" in resp.text or "Capture" in resp.text
+
+
+def test_07_schedule_lifecycle(front_sim_bridge):
+    client = front_sim_bridge["client"]
+    get_page = client.simulate_get("/1/schedule")
+    assert get_page.status_code == 200
+    assert "Schedule" in get_page.text
+
+    start = client.simulate_post("/1/schedule/state", json={"action": "toggle"})
+    assert start.status_code == 200
+    assert front_sim_bridge["schedule_state"]["state"] == "working"
+
+    stop = client.simulate_post("/1/schedule/state", json={"action": "toggle"})
+    assert stop.status_code == 200
+    assert front_sim_bridge["schedule_state"]["state"] == "stopped"
+
+
+def test_08_guestmode_get_and_post(front_sim_bridge):
+    client = front_sim_bridge["client"]
+    page = client.simulate_get("/1/guestmode")
+    assert page.status_code == 200
+
+    post = client.simulate_post("/1/guestmode", json={"command": "grab_control"})
+    assert post.status_code == 200
+
+
+def test_09_wrapped_value_shape_compat(front_sim_bridge):
+    front_sim_bridge["wrapped_method_sync"]["enabled"] = True
+    client = front_sim_bridge["client"]
+    resp = client.simulate_get("/1/settings")
+    assert resp.status_code == 200
+    assert "Save Sub Frames" in resp.text
+    front_sim_bridge["wrapped_method_sync"]["enabled"] = False
+
+
+def test_10_error_path_fallback_succeeds(front_sim_bridge):
+    front_sim_bridge["forced_stack_set_error"]["enabled"] = True
+    client = front_sim_bridge["client"]
+    resp = client.simulate_post("/1/settings", json=_settings_payload())
+    assert resp.status_code == 200
+    assert "Successfully Updated Settings." in resp.text
+    front_sim_bridge["forced_stack_set_error"]["enabled"] = False
+
+
+def test_11_performance_budget_smoke(front_sim_bridge):
+    client = front_sim_bridge["client"]
+    start = time.perf_counter()
+    resp = client.simulate_get("/1/home-content")
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    assert resp.status_code in (200, 204)
+    assert elapsed_ms < 1500
+
+
+def test_12_udp_scan_iscope(simulator_server):
+    resp = _send_udp_command(
+        simulator_server["host"],
+        simulator_server["udp_port"],
+        {"id": 1, "method": "scan_iscope"},
+    )
+    assert resp.get("result") == "ok"
+    assert resp.get("device") == "seestar"
+
+
+def test_13_multi_device_federation_home_render(monkeypatch, front_sim_bridge):
+    monkeypatch.setattr(
+        Config,
+        "seestars",
+        [
+            {"device_num": 1, "name": "Seestar Alpha", "ip_address": "127.0.0.1"},
+            {"device_num": 2, "name": "Seestar Beta", "ip_address": "127.0.0.1"},
+        ],
+    )
+    front_app._context_cached.clear()
+    front_app._last_context_get_time.clear()
+
+    resp = front_sim_bridge["client"].simulate_get("/0/")
+    assert resp.status_code == 200
+    assert "Seestar Alpha" in resp.text
+    assert "Seestar Beta" in resp.text
+
+
+def test_14_federation_eventstatus_groups_by_device(front_sim_bridge):
+    resp = front_sim_bridge["client"].simulate_get(
+        "/0/eventstatus?action=goto",
+        headers={"HX-Current-URL": "http://localhost/0/goto", "User-Agent": "pytest"},
+    )
+    assert resp.status_code == 200
+    assert "Device ID: 1" in resp.text
+    assert "Device ID: 2" in resp.text
+
+
+def test_15_stateful_startup_flow(front_sim_bridge):
+    client = front_sim_bridge["client"]
+    start = client.simulate_post(
+        "/1/startup",
+        json={
+            "action": "start",
+            "lat": "42.5",
+            "long": "-71.5",
+            "auto_focus": "on",
+            "dark_frames": "on",
+            "polar_align": "on",
+            "dec-offset": "0",
+        },
+    )
+    assert start.status_code == 200
+    assert front_sim_bridge["schedule_state"]["state"] == "working"
+
+    stop = client.simulate_post("/1/startup", json={"action": "stop"})
+    assert stop.status_code == 200
+    assert front_sim_bridge["schedule_state"]["state"] == "stopped"
+
+
+def test_16_fault_injection_eventstatus_none(front_sim_bridge):
+    front_sim_bridge["inject_eventstatus_none"]["enabled"] = True
+    resp = front_sim_bridge["client"].simulate_get(
+        "/1/eventstatus?action=goto",
+        headers={"HX-Current-URL": "http://localhost/1/goto", "User-Agent": "pytest"},
+    )
+    assert resp.status_code == 200
+    assert "No results available." in resp.text
+    front_sim_bridge["inject_eventstatus_none"]["enabled"] = False
+
+
+@pytest.mark.parametrize(
+    "wrapped,set_stack_settings_only",
+    [
+        (False, False),
+        (True, False),
+        (False, True),
+    ],
+)
+def test_17_protocol_compatibility_matrix(
+    front_sim_bridge, wrapped, set_stack_settings_only
+):
+    front_sim_bridge["wrapped_method_sync"]["enabled"] = wrapped
+    front_sim_bridge["set_stack_settings_only"]["enabled"] = set_stack_settings_only
+    resp = front_sim_bridge["client"].simulate_post(
+        "/1/settings", json=_settings_payload()
+    )
+    assert resp.status_code == 200
+    assert "Successfully Updated Settings." in resp.text
+    front_sim_bridge["wrapped_method_sync"]["enabled"] = False
+    front_sim_bridge["set_stack_settings_only"]["enabled"] = False
+
+
+def test_18_concurrency_load_smoke(front_sim_bridge):
+    def _call_once():
+        resp = front_sim_bridge["client"].simulate_get("/1/home-content")
+        return resp.status_code
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        statuses = list(ex.map(lambda _i: _call_once(), range(40)))
+    assert all(code in (200, 204) for code in statuses)
+
+
+def test_19_settings_fuzz_robustness(front_sim_bridge):
+    fuzz_payload = _settings_payload()
+    fuzz_payload.update(
+        {
+            "stack_dither_pix": "NaN",
+            "stack_dither_interval": "",
+            "exp_ms_stack_l": None,
+            "stack_brightness": "invalid",
+            "stack_contrast": {},
+            "stack_saturation": [],
+        }
+    )
+    resp = front_sim_bridge["client"].simulate_post("/1/settings", json=fuzz_payload)
+    assert resp.status_code == 200
+    assert "Settings." in resp.text
+
+
+def test_20_performance_batch_budget(front_sim_bridge):
+    client = front_sim_bridge["client"]
+    start = time.perf_counter()
+    for path in [
+        "/1/home-content",
+        "/1/stats-content",
+        "/1/guestmode-content",
+        "/1/eventstatus?action=goto",
+        "/1/settings",
+        "/1/live/star",
+    ]:
+        resp = client.simulate_get(
+            path,
+            headers={
+                "HX-Current-URL": "http://localhost/1/goto",
+                "User-Agent": "pytest",
+            },
+        )
+        assert resp.status_code in (200, 204)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    assert elapsed_ms < 4000
+
+
+def test_21_html_contract_snapshot_smoke(front_sim_bridge):
+    client = front_sim_bridge["client"]
+    settings = client.simulate_get("/1/settings")
+    assert settings.status_code == 200
+    assert "Save Sub Frames" in settings.text
+    assert "Save Failed Sub Frames" in settings.text
+    assert "Seestar Federation" in settings.text
+
+    live = client.simulate_get("/1/live/star")
+    assert live.status_code == 200
+    assert "Video" in live.text
+
+
+def test_22_response_delay_resilience(front_sim_bridge):
+    front_sim_bridge["response_delay_ms"]["value"] = 80
+    resp = front_sim_bridge["client"].simulate_get("/1/home-content")
+    assert resp.status_code in (200, 204)
+    front_sim_bridge["response_delay_ms"]["value"] = 0
+
+
+# ---------------------------------------------------------------------------
+# Two-device federation integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def two_simulator_servers():
+    """Start two independent simulator instances on separate ports."""
+    host = "127.0.0.1"
+    sims = [
+        {
+            "name": f"sim{i}",
+            "tcp_port": _find_free_port(),
+            "udp_port": _find_free_port(),
+        }
+        for i in range(1, 3)
+    ]
+    logger = logging.getLogger("two-sim-integration")
+    listeners, threads = [], []
+    for sim in sims:
+        lst = SocketListener(
+            logger, host=host, tcp_port=sim["tcp_port"], udp_port=sim["udp_port"]
+        )
+        t = threading.Thread(target=lst._start_socket_listener, daemon=True)
+        t.start()
+        _wait_for_tcp(host, sim["tcp_port"])
+        listeners.append(lst)
+        threads.append(t)
+
+    yield {"host": host, "sim1": sims[0], "sim2": sims[1]}
+
+    for lst in listeners:
+        lst.shutdown_event.set()
+        if lst.tcp_socket:
+            lst.tcp_socket.close()
+        if lst.udp_socket:
+            lst.udp_socket.close()
+    for t in threads:
+        t.join(timeout=2)
+
+
+@pytest.fixture
+def two_device_federation(monkeypatch, two_simulator_servers):
+    """
+    Wires the device layer to two real simulator instances and exposes both a
+    device-layer TestClient and a front-layer TestClient for end-to-end testing.
+    """
+    import device.app as device_app
+    import device.telescope as tel_module
+    from device.shr import set_shr_logger
+
+    host = two_simulator_servers["host"]
+    port1 = two_simulator_servers["sim1"]["tcp_port"]
+    port2 = two_simulator_servers["sim2"]["tcp_port"]
+    logger = logging.getLogger("federation-fixture")
+    set_shr_logger(logger)
+
+    # Isolate from the developer's local config.toml: if interop_pem is set
+    # there, reconnect() would attempt the auth handshake against the
+    # simulator, which does not implement it, and the devices never connect.
+    monkeypatch.setattr(Config, "seestar_interop_pem", "", raising=False)
+
+    # Clean slate for the telescope module's global device registry
+    tel_module.seestar_dev.clear()
+    tel_module.start_seestar_federation(logger)
+    dev1 = tel_module.start_seestar_device(logger, "Seestar Alpha", host, port1, 1)
+    dev2 = tel_module.start_seestar_device(logger, "Seestar Beta", host, port2, 2)
+
+    # Wait for both simulators to accept the device connections
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        if dev1.is_connected and dev2.is_connected:
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail("Timed out waiting for both simulators to connect")
+
+    # Device-layer Falcon app (routes to seestar_dev via telescope module globals)
+    device_falc_app = falcon.App()
+    device_app.init_routes(device_falc_app, "telescope", tel_module)
+    device_client = testing.TestClient(device_falc_app)
+
+    def _alpaca_action(dev_num, action, parameters):
+        """PUT to the device-layer action endpoint with required ALPACA fields."""
+        return device_client.simulate_put(
+            f"/api/v1/telescope/{dev_num}/action",
+            json={
+                "Action": action,
+                "Parameters": json.dumps(parameters),
+                "ClientID": 1,
+                "ClientTransactionID": 1,
+            },
+        )
+
+    # Bridge the front layer to the device layer without a real HTTP server
+    def _device_action(action, dev_num, parameters, is_schedule=False):
+        resp = _alpaca_action(dev_num, action, parameters)
+        if resp.status_code == 200:
+            return resp.json
+        return None
+
+    monkeypatch.setattr(
+        Config,
+        "seestars",
+        [
+            {"device_num": 1, "name": "Seestar Alpha", "ip_address": host},
+            {"device_num": 2, "name": "Seestar Beta", "ip_address": host},
+        ],
+    )
+    monkeypatch.setattr(front_app, "do_action_device", _device_action)
+    monkeypatch.setattr(front_app, "check_api_state", lambda _tid: True)
+    monkeypatch.setattr(front_app, "get_listening_ip", lambda: "127.0.0.1")
+    monkeypatch.setattr(front_app, "get_twilight_times", lambda: {"sunset": "18:00"})
+    monkeypatch.setattr(
+        front_app,
+        "get_nearest_csc",
+        lambda: {"status_msg": "SUCCESS", "href": "", "full_img": ""},
+    )
+    monkeypatch.setattr(
+        front_app,
+        "get_planning_cards",
+        lambda: [{"card_name": "twilight_times", "planning_page_enable": True}],
+    )
+
+    front_app._context_cached.clear()
+    front_app._last_context_get_time.clear()
+    front_app.StatsContentResource._last_render_by_key.clear()
+    front_app.GuestModeContentResource._last_render_by_key.clear()
+    front_app.EventStatus._last_render_by_key.clear()
+
+    front_client = testing.TestClient(_build_front_test_app())
+
+    yield {
+        "device_client": device_client,
+        "alpaca_action": _alpaca_action,
+        "front_client": front_client,
+        "dev1": dev1,
+        "dev2": dev2,
+        "host": host,
+    }
+
+    tel_module.end_seestar_device(1)
+    tel_module.end_seestar_device(2)
+    tel_module.seestar_dev.clear()
+
+
+def test_23_two_devices_both_connect_to_simulators(two_device_federation):
+    """Both Seestar instances establish a live TCP connection to their simulator."""
+    assert two_device_federation["dev1"].is_connected, "device 1 not connected"
+    assert two_device_federation["dev2"].is_connected, "device 2 not connected"
+
+
+def test_24_two_devices_respond_to_method_sync(two_device_federation):
+    """Device-layer action endpoint responds correctly for both device numbers."""
+    alpaca_action = two_device_federation["alpaca_action"]
+    for devnum in (1, 2):
+        resp = alpaca_action(devnum, "method_sync", {"method": "get_device_state"})
+        assert resp.status_code == 200, (
+            f"device {devnum} action endpoint returned {resp.status_code}"
+        )
+        body = resp.json
+        assert body["ErrorNumber"] == 0, f"device {devnum} returned error: {body}"
+        assert "device" in body.get("Value", {}).get("result", {}), (
+            f"device {devnum} response missing device info"
+        )
+
+
+def test_25_two_devices_have_independent_simulator_state(two_device_federation):
+    """Commands to device 1 and device 2 reach independent simulators."""
+    alpaca_action = two_device_federation["alpaca_action"]
+    results = {}
+    for devnum in (1, 2):
+        resp = alpaca_action(devnum, "method_sync", {"method": "get_device_state"})
+        assert resp.status_code == 200
+        results[devnum] = resp.json.get("Value", {}).get("result", {})
+
+    # Both simulators report their own device state independently
+    assert "device" in results[1]
+    assert "device" in results[2]
+
+
+def test_26_front_home_pages_render_for_both_devices(two_device_federation):
+    """Individual device home pages render without crashing for both devices."""
+    front_client = two_device_federation["front_client"]
+    for devnum in (1, 2):
+        resp = front_client.simulate_get(f"/{devnum}/")
+        assert resp.status_code == 200, (
+            f"home page for device {devnum} returned {resp.status_code}"
+        )
+        assert "Seestar" in resp.text, f"device {devnum} home page missing Seestar name"
+
+
+def test_27_federation_home_lists_both_devices(two_device_federation):
+    """Federation home page (devnum=0) lists both configured Seestar devices."""
+    resp = two_device_federation["front_client"].simulate_get("/0/")
+    assert resp.status_code == 200
+    assert "Seestar Alpha" in resp.text
+    assert "Seestar Beta" in resp.text
+
+
+def test_40_framed_mosaic_federation_by_time_reaches_both_devices(
+    two_device_federation,
+):
+    """A federated by_time start_framed_mosaic splits panel_time_sec across both devices."""
+    alpaca_action = two_device_federation["alpaca_action"]
+    dev1 = two_device_federation["dev1"]
+    dev2 = two_device_federation["dev2"]
+
+    resp = alpaca_action(
+        0,
+        "start_framed_mosaic",
+        {
+            "target_name": "M31",
+            "ra": 0.7,
+            "dec": 41.27,
+            "is_j2000": True,
+            "is_use_lp_filter": False,
+            "federation_mode": "by_time",
+            "panel_time_sec": 20,
+            "mosaic_scale": 1.5,
+            "mosaic_angle": 45.0,
+            "gain": 80,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json["ErrorNumber"] == 0
+
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        if dev1.schedule["list"] and dev2.schedule["list"]:
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail(
+            "Timed out waiting for the framed mosaic item to reach both devices"
+        )
+
+    assert dev1.schedule["list"][0]["action"] == "start_framed_mosaic"
+    assert dev1.schedule["list"][0]["params"]["panel_time_sec"] == 10
+    assert dev2.schedule["list"][0]["action"] == "start_framed_mosaic"
+    assert dev2.schedule["list"][0]["params"]["panel_time_sec"] == 10
+
+    # add_schedule_item populates schedule["list"] synchronously, before the
+    # background scheduler_thread_fn thread flips schedule["state"] to
+    # "working". stop_scheduler is a silent no-op unless state == "working",
+    # so wait for that state on both devices before stopping -- otherwise the
+    # real background thread would race ahead and run the framed mosaic item
+    # to completion against the real simulator, unseen by this test.
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        if dev1.schedule["state"] == "working" and dev2.schedule["state"] == "working":
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail("Timed out waiting for both devices' schedulers to start working")
+
+    # Don't wait out the full stacking duration on both real devices — stop
+    # both schedulers now that the routing/splitting behavior is confirmed.
+    stop1 = dev1.stop_scheduler({})
+    stop2 = dev2.stop_scheduler({})
+    assert stop1["code"] == 0, f"dev1 stop_scheduler did not succeed: {stop1}"
+    assert stop2["code"] == 0, f"dev2 stop_scheduler did not succeed: {stop2}"
+
+    # Confirm the stop actually took effect rather than silently no-op'ing --
+    # if it had, the scheduler would still show "working" and a real capture
+    # would keep running against the simulator after this test returns.
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        if dev1.schedule["state"] != "working" and dev2.schedule["state"] != "working":
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail("Timed out waiting for both devices' schedulers to stop")
+
+    assert dev1.schedule["state"] == "stopped"
+    assert dev2.schedule["state"] == "stopped"
+
+
+# ---------------------------------------------------------------------------
+# Tests 28-35: Stack type and wide angle camera (added with firmware 3.2.0)
+# ---------------------------------------------------------------------------
+
+
+def test_28_simulator_handles_set_stack_type(simulator_server):
+    """Simulator accepts set_stack_type and persists the value in state."""
+    host = simulator_server["host"]
+    port = simulator_server["tcp_port"]
+
+    for stack_type in ("SolarSystem", "MilkyWay", "DeepSky"):
+        _send_tcp_command(
+            host,
+            port,
+            {"id": 2800, "method": "set_stack_type", "params": {"type": stack_type}},
+        )
+        state = _send_tcp_command(
+            host, port, {"id": 2801, "method": "get_device_state"}
+        )
+        assert state["result"]["stack_type"] == stack_type, (
+            f"Expected stack_type={stack_type!r} in device state"
+        )
+
+
+def test_38_simulator_mosaic_setting_round_trips(simulator_server):
+    """set_setting with a mosaic sub-object updates get_setting's response."""
+    host = simulator_server["host"]
+    port = simulator_server["tcp_port"]
+
+    _send_tcp_command(
+        host,
+        port,
+        {
+            "id": 3100,
+            "method": "set_setting",
+            "params": {"mosaic": {"scale": 1.5, "angle": 45.0, "star_map_angle": 0.0}},
+        },
+    )
+    state = _send_tcp_command(host, port, {"id": 3101, "method": "get_setting"})
+    assert state["result"]["mosaic"]["scale"] == 1.5
+    assert state["result"]["mosaic"]["angle"] == 45.0
+
+    _send_tcp_command(
+        host,
+        port,
+        {
+            "id": 3102,
+            "method": "set_setting",
+            "params": {"mosaic": {"scale": 1.0, "angle": 0.0, "star_map_angle": 0.0}},
+        },
+    )
+    reset_state = _send_tcp_command(host, port, {"id": 3103, "method": "get_setting"})
+    assert reset_state["result"]["mosaic"]["scale"] == 1.0
+    assert reset_state["result"]["mosaic"]["angle"] == 0.0
+
+
+def test_29_stack_type_in_image_form_reaches_device_layer(
+    monkeypatch, front_sim_bridge
+):
+    """stackType from an image POST is included in the start_mosaic payload."""
+    captured = {}
+
+    # Extend the bridge to capture start_mosaic params
+    original_action = front_app.do_action_device
+
+    def capturing_do_action(action, dev_num, params, is_schedule=False):
+        if action == "start_mosaic":
+            captured["start_mosaic_params"] = params
+            return {"ErrorNumber": 0, "Value": {}}
+        return original_action(action, dev_num, params, is_schedule)
+
+    monkeypatch.setattr(front_app, "do_action_device", capturing_do_action)
+
+    # Add the image route to the test app so we can POST to it
+    app = falcon.App()
+    app.add_route("/{telescope_id:int}/image", front_app.ImageResource())
+    client = testing.TestClient(app)
+
+    form = {
+        "targetName": "Mars",
+        "ra": "1.5",
+        "dec": "10.0",
+        "panelTime": "600",
+        "gain": "80",
+        "num_tries": "1",
+        "retry_wait_s": "300",
+        "stackType": "SolarSystem",
+    }
+    resp = client.simulate_post("/1/image", json=form)
+    assert resp.status_code == 200
+    assert captured.get("start_mosaic_params", {}).get("stack_type") == "SolarSystem"
+
+
+def test_39_framed_mosaic_form_reaches_device_layer(monkeypatch, front_sim_bridge):
+    """A Framed Mosaic form POST reaches the device layer as start_framed_mosaic."""
+    captured = {}
+    original_action = front_app.do_action_device
+
+    def capturing_do_action(action, dev_num, params, is_schedule=False):
+        if action == "start_framed_mosaic":
+            captured["params"] = params
+            return {"ErrorNumber": 0, "Value": {}}
+        return original_action(action, dev_num, params, is_schedule)
+
+    monkeypatch.setattr(front_app, "do_action_device", capturing_do_action)
+
+    app = falcon.App()
+    app.add_route("/{telescope_id:int}/framed_mosaic", front_app.FramedMosaicResource())
+    client = testing.TestClient(app)
+
+    form = {
+        "targetName": "M31",
+        "ra": "0.7",
+        "dec": "41.27",
+        "mosaicScale": "1.5",
+        "mosaicAngle": "45",
+        "panelTime": "3600",
+        "gain": "80",
+        "num_tries": "1",
+        "retry_wait_s": "300",
+    }
+    resp = client.simulate_post("/1/framed_mosaic", json=form)
+    assert resp.status_code == 200
+    assert captured["params"]["mosaic_scale"] == 1.5
+    assert captured["params"]["mosaic_angle"] == 45.0
+    assert captured["params"]["target_name"] == "M31"
+
+
+def test_30_invalid_stack_type_normalised_to_deepsky_before_device(
+    monkeypatch, front_sim_bridge
+):
+    """A bogus stackType value must be normalised to DeepSky before reaching the device."""
+    captured = {}
+    original_action = front_app.do_action_device
+
+    def capturing_do_action(action, dev_num, params, is_schedule=False):
+        if action == "start_mosaic":
+            captured["stack_type"] = params.get("stack_type")
+            return {"ErrorNumber": 0, "Value": {}}
+        return original_action(action, dev_num, params, is_schedule)
+
+    monkeypatch.setattr(front_app, "do_action_device", capturing_do_action)
+
+    app = falcon.App()
+    app.add_route("/{telescope_id:int}/image", front_app.ImageResource())
+    client = testing.TestClient(app)
+
+    form = {
+        "targetName": "Test",
+        "ra": "1.5",
+        "dec": "10.0",
+        "panelTime": "600",
+        "gain": "80",
+        "num_tries": "1",
+        "retry_wait_s": "300",
+        "stackType": "HACK_INJECTION; rm -rf /",
+    }
+    resp = client.simulate_post("/1/image", json=form)
+    assert resp.status_code == 200
+    assert captured.get("stack_type") == "DeepSky"
+
+
+def test_31_set_stack_type_tcp_round_trip_all_types(simulator_server):
+    """All three valid stack types survive a TCP round-trip through the simulator."""
+    host = simulator_server["host"]
+    port = simulator_server["tcp_port"]
+
+    for stack_type in ("DeepSky", "SolarSystem", "MilkyWay"):
+        set_resp = _send_tcp_command(
+            host,
+            port,
+            {"id": 3100, "method": "set_stack_type", "params": {"type": stack_type}},
+        )
+        assert set_resp.get("result") == 0, f"set_stack_type failed for {stack_type}"
+
+        state_resp = _send_tcp_command(
+            host, port, {"id": 3101, "method": "get_device_state"}
+        )
+        assert state_resp["result"]["stack_type"] == stack_type
+
+
+def test_32_wide_cam_settings_shown_for_s30_model(monkeypatch, front_sim_bridge):
+    """GET /settings for an S30 device (experimental on) renders wide cam fields."""
+    monkeypatch.setattr(front_app, "get_device_model", lambda _tid: "Seestar S30")
+    # Config.experimental is already True from the bridge fixture
+
+    resp = front_sim_bridge["client"].simulate_get("/1/settings")
+    assert resp.status_code == 200
+    assert "Wide Angle Camera" in resp.text
+    assert "Wide Camera 4K Mode" in resp.text
+    assert "Wide Camera Denoise" in resp.text
+    assert "Wide Camera Focal Position" in resp.text
+
+
+def test_33_wide_cam_settings_absent_for_s50_model(monkeypatch, front_sim_bridge):
+    """GET /settings for an S50 device must NOT include wide cam fields."""
+    monkeypatch.setattr(front_app, "get_device_model", lambda _tid: "Seestar S50")
+
+    resp = front_sim_bridge["client"].simulate_get("/1/settings")
+    assert resp.status_code == 200
+    assert "Wide Angle Camera" not in resp.text
+    assert "Wide Camera 4K Mode" not in resp.text
+
+
+def test_34_wide_cam_settings_absent_when_experimental_off(
+    monkeypatch, front_sim_bridge
+):
+    """Even for S30, wide cam settings must not render when experimental is disabled."""
+    monkeypatch.setattr(front_app, "get_device_model", lambda _tid: "Seestar S30")
+    monkeypatch.setattr(Config, "experimental", False)
+
+    resp = front_sim_bridge["client"].simulate_get("/1/settings")
+    assert resp.status_code == 200
+    assert "Wide Angle Camera" not in resp.text
+
+
+def test_35_wide_cam_settings_round_trip_via_simulator(monkeypatch, front_sim_bridge):
+    """POST wide cam settings for S30 → verify the simulator received them."""
+    monkeypatch.setattr(front_app, "get_device_model", lambda _tid: "Seestar S30")
+
+    payload = {
+        **_settings_payload(),
+        "wide_cam": "true",
+        "wide_4k": "false",
+        "wide_denoise": "true",
+        "wide_focal_pos": "1600",
+    }
+
+    post_resp = front_sim_bridge["client"].simulate_post("/1/settings", json=payload)
+    assert post_resp.status_code == 200
+    assert "Successfully Updated Settings." in post_resp.text
+
+    # Confirm the simulator absorbed the wide cam values via get_setting
+    state = _send_tcp_command(
+        front_sim_bridge["host"],
+        front_sim_bridge["tcp_port"],
+        {"id": 3500, "method": "get_setting"},
+    )
+    setting = state.get("result", {})
+    assert setting.get("wide_cam") is True
+    assert setting.get("wide_4k") is False
+    assert setting.get("wide_focal_pos") == 1600
+
+
+def test_36_force_stop_goto_unwedges_device(two_device_federation):
+    """A wedged AutoGoto state on a real device (connected to the simulator)
+    is force-cleared by the force_stop_goto ALPACA action, and the firmware
+    stop round-trips through the simulator."""
+    dev1 = two_device_federation["dev1"]
+    dev1.event_state["AutoGoto"] = {"state": "working"}
+    dev1.event_state["PlateSolve"] = {"state": "fail"}
+    assert dev1.is_goto() is True
+
+    resp = two_device_federation["alpaca_action"](1, "force_stop_goto", {})
+
+    assert resp.status_code == 200
+    value = resp.json["Value"]
+    assert value["ok"] is True
+    assert value["stop_slew_result"] is not None
+    assert dev1.is_goto() is False
+    assert dev1.event_state["AutoGoto"]["state"] == "stopped"
+    assert dev1.event_state["PlateSolve"]["state"] == "stopped"
+
+
+def test_37_force_stop_goto_front_endpoint(two_device_federation):
+    """The front /api/{id}/force_stop_goto endpoint clears a wedged goto end
+    to end (front → device layer → simulator) and serves both JSON and HTMX
+    fragment responses."""
+    dev1 = two_device_federation["dev1"]
+    front_client = two_device_federation["front_client"]
+
+    dev1.event_state["AutoGoto"] = {"state": "working"}
+    resp = front_client.simulate_post("/api/1/force_stop_goto")
+    assert resp.status_code == 200
+    assert resp.json["Value"]["ok"] is True
+    assert dev1.is_goto() is False
+
+    # HTMX variant returns a status fragment for the goto page.
+    dev1.event_state["AutoGoto"] = {"state": "working"}
+    resp = front_client.simulate_post(
+        "/api/1/force_stop_goto", headers={"HX-Request": "true"}
+    )
+    assert resp.status_code == 200
+    assert "Cleared. Mount free." in resp.text
+    assert dev1.is_goto() is False
+
+
+def test_41_auto_af_shown_in_settings(monkeypatch, front_sim_bridge):
+    """GET /settings renders the Automatic Autofocus field once the simulator
+    reports auto_af (a real key, confirmed present/settable since firmware
+    2732 (v3.1.2) against the live QEMU emulator running real firmware)."""
+    _send_tcp_command(
+        front_sim_bridge["host"],
+        front_sim_bridge["tcp_port"],
+        {"id": 3601, "method": "set_setting", "params": {"auto_af": True}},
+    )
+
+    resp = front_sim_bridge["client"].simulate_get("/1/settings")
+    assert resp.status_code == 200
+    assert "Automatic Autofocus" in resp.text
+
+
+def test_42_auto_af_round_trip_via_simulator(front_sim_bridge):
+    """POST auto_af → verify the simulator received it via get_setting."""
+    payload = {**_settings_payload(), "auto_af": "true"}
+
+    post_resp = front_sim_bridge["client"].simulate_post("/1/settings", json=payload)
+    assert post_resp.status_code == 200
+    assert "Successfully Updated Settings." in post_resp.text
+
+    state = _send_tcp_command(
+        front_sim_bridge["host"],
+        front_sim_bridge["tcp_port"],
+        {"id": 3600, "method": "get_setting"},
+    )
+    setting = state.get("result", {})
+    assert setting.get("auto_af") is True
+
+
+def test_43_scope_goto_and_pi_set_time_reject_double_nested_params(simulator_server):
+    """Regression test for issues #748/#758. Decompiled firmware confirms
+    scope_goto/scope_sync's Params::Params and pi_set_time's json_array2obj
+    accept EITHER a keyed object OR a plain positional list/single-element
+    list-wrap -- what real firmware actually rejects is the DOUBLE nesting
+    that transform_message_for_verify used to produce when injecting the
+    auth "verify" flag into list params: [[ra, dec], "verify"] instead of
+    [ra, dec, "verify"], and [[date_json], "verify"] instead of
+    [date_json, "verify"]. The simulator mirrors that real contract so a
+    regression back to the double-nesting bug is caught by CI."""
+    host = simulator_server["host"]
+    port = simulator_server["tcp_port"]
+
+    # Both real shapes succeed for scope_goto: keyed object (what ALP sends
+    # today) and a plain positional list (what older/no-verify-injection
+    # callers, e.g. the CLI, still send).
+    good_goto_obj = _send_tcp_command(
+        host,
+        port,
+        {"id": 200, "method": "scope_goto", "params": {"ra": 1.0, "dec": 2.0}},
+    )
+    assert "error" not in good_goto_obj
+
+    good_goto_list = _send_tcp_command(
+        host, port, {"id": 201, "method": "scope_goto", "params": [1.0, 2.0]}
+    )
+    assert "error" not in good_goto_list
+
+    good_goto_list_with_verify = _send_tcp_command(
+        host, port, {"id": 202, "method": "scope_goto", "params": [1.0, 2.0, "verify"]}
+    )
+    assert "error" not in good_goto_list_with_verify
+
+    # The double-nested shape (the actual pre-fix bug) is rejected.
+    bad_goto = _send_tcp_command(
+        host,
+        port,
+        {"id": 203, "method": "scope_goto", "params": [[1.0, 2.0], "verify"]},
+    )
+    assert bad_goto.get("code") == 108
+    assert "error" in bad_goto
+
+    good_sync_obj = _send_tcp_command(
+        host,
+        port,
+        {"id": 204, "method": "scope_sync", "params": {"ra": 1.0, "dec": 2.0}},
+    )
+    assert "error" not in good_sync_obj
+
+    bad_sync = _send_tcp_command(
+        host,
+        port,
+        {"id": 205, "method": "scope_sync", "params": [[1.0, 2.0], "verify"]},
+    )
+    assert bad_sync.get("code") == 108
+
+    good_time_obj = _send_tcp_command(
+        host,
+        port,
+        {"id": 206, "method": "pi_set_time", "params": {"year": 2026, "mon": 1}},
+    )
+    assert "error" not in good_time_obj
+
+    good_time_list = _send_tcp_command(
+        host,
+        port,
+        {"id": 207, "method": "pi_set_time", "params": [{"year": 2026, "mon": 1}]},
+    )
+    assert "error" not in good_time_list
+
+    bad_time = _send_tcp_command(
+        host,
+        port,
+        {
+            "id": 208,
+            "method": "pi_set_time",
+            "params": [[{"year": 2026, "mon": 1}], "verify"],
+        },
+    )
+    assert bad_time.get("code") == 107
+    assert "error" in bad_time

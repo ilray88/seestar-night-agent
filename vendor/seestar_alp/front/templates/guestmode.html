@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+
+{% block header %}
+    <div class="page-hero">
+        <div>
+            <p class="page-kicker">Access</p>
+            <h1 class="page-title">{% block title %}Guest Mode{% endblock %}</h1>
+            <p class="page-subtitle">Control ownership and active clients.</p>
+        </div>
+    </div>
+{% endblock %}
+
+{% block content %}
+    <div id="guestmode-content"
+         class="no-htmx-fx"
+         hx-get="{{ root }}/guestmode-content"
+         hx-trigger="load, every 15s"
+         hx-swap="innerHTML">
+      {% include 'partials/guestmode_content.html' with context %}
+    </div>
+{% endblock %}

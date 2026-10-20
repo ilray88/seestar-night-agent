@@ -1,0 +1,64 @@
+# ---- 运行数据 ----
+data/
+!data/.gitkeep
+
+# ---- 设备互操作密钥（有意入库）----
+# 这是从官方 XAPK 提取的厂商设备密钥，不是个人凭据。固件 7.18+ 起
+# Seestar 的本地 API 需要它做 RSA 握手，缺了它后端无法连接设备。
+# 因此这里显式放行，覆盖 vendor/seestar-mcp/.gitignore 中的 *.pem 规则。
+# 注意：本仓库应保持私有；若改为公开，请先移除该文件。
+!vendor/seestar_alp/seestar_client_key.pem
+
+# ---- 原始素材与中间产物（体积大，不入库）----
+# 设备原始 FITS（单张约 50 MB）
+data/stacked_fits/
+data/fits_probe/
+# 官方 App 安装包
+*.xapk
+*.apk
+# 后期中间产物与调试输出
+results/processed/_debug/
+results/processed/*.png
+# 设备机内 JPG / 历史目标
+results/DeepSky/
+results/Scenery/
+results/SolarSystem/
+# 发布用重命名副本（与 processed/ 重复）
+results/发布用/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# ---- 虚拟环境 ----
+.venv/
+.venv2/
+venv/
+env/
+
+# ---- 日志 ----
+*.log
+*.log.[0-9]
+_backend.err
+_backend.log
+watchdog.log
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 本地原始 clone（真正的副本在 vendor/）----
+/seestar_alp/
+/seestar-mcp/
+
+# ---- 调试残留图片 ----
+dev/_*.jpg

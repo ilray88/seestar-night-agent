@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+
+{% block header %}
+    <div class="page-hero">
+        <div>
+            <p class="page-kicker">Dashboard</p>
+            <h1 class="page-title">{% block title %}Simple Seestar Controller{% endblock %}</h1>
+            <p class="page-subtitle">Connected telescope status in a single readable stream.</p>
+        </div>
+        <div class="panel-muted">Auto refresh every 15s</div>
+    </div>
+{% endblock %}
+
+{% block content %}
+    <div id="home-content"
+         class="no-htmx-fx"
+         hx-get="{{ root }}/home-content"
+         hx-trigger="load, every 15s"
+         hx-swap="innerHTML">
+        {% include 'partials/home_content.html' with context %}
+    </div>
+{% endblock %}

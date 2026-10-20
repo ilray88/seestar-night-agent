@@ -1,0 +1,552 @@
+{% import 'partials/mosaic_order_diagram.html' as mosaic_diagrams %}
+{% block html_header %}
+    <link href="https://aladin.u-strasbg.fr/AladinLite/api/v2/latest/aladin.min.css" rel="stylesheet">
+    <script type="text/javascript" src="https://code.jquery.com/jquery-1.12.1.min.js" charset="utf-8"></script>
+    <!-- script type="text/javascript" src="https://aladin.u-strasbg.fr/AladinLite/api/v2/latest/aladin.min.js" charset="utf-8"></script -->
+    <script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8"></script>
+    <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
+    <script type="text/javascript" src="/public/AstroMosaicEngine.js"></script>
+    <style>
+        /* Bring the aladin control buttons to the top layer */
+        .aladin-simbadPointer-control button {
+            position: relative;
+            z-index: 9;
+        }
+
+        .aladin-projection-control button {
+            position: relative;
+            z-index: 9;
+        }
+
+        .aladin-stack-control button {
+            position: relative;
+            z-index: 9;
+            display: block;
+        }
+
+        .aladin-stack-box {
+            position: relative;
+            z-index: 9;
+        }
+
+        .aladin-context-menu {
+            position: relative;
+            z-index: 9;
+        }
+
+        .aladin-fullScreen-control button {
+            position: relative;
+            z-index: 9;
+        }
+
+        .planning-controls-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 0.6rem 0.75rem;
+            align-items: end;
+            padding: 0 0.75rem;
+        }
+
+        .planning-controls-grid .control-cell {
+            min-width: 0;
+        }
+
+        .planning-controls-grid .form-label {
+            margin-bottom: 0.3rem;
+            font-weight: 600;
+        }
+
+        .planning-controls-grid .grid-pair {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.45rem;
+        }
+
+        .planning-controls-grid .btn {
+            width: 100%;
+        }
+
+        .planning-controls-grid .form-check {
+            margin-top: 0.2rem;
+        }
+    </style>
+{% endblock %}
+<div>
+    <fieldset class="border rounded-3 mb-3 pb-3">
+        <legend class="float-none w-auto">
+           <h5>Controls</h5>
+        </legend>
+        <div class="planning-controls-grid">
+            <div class="control-cell">
+                <label for="astro_mosaic_search_text" class="form-label">Search</label>
+                <input type="text" class="form-control" id="astro_mosaic_search_text" name="astro_moasic_search_text" value="M33">
+            </div>
+            <div class="control-cell">
+                <label for="astro_mosaic_search_button" class="form-label">Find Target</label>
+                <button type="button" id="astro_mosaic_search_button" class="btn btn-primary" title="Search for object." onclick="update_astro_mosaic()">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-search" viewBox="0 0 16 16">
+                        <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001q.044.06.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1 1 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="control-cell">
+                <label for="seestar" class="form-label">Seestar</label>
+                <select class="form-select app-select" id="seestar" name="seestar" onchange="update_astro_mosaic()">
+                  {% for model in ["S50", "S50 Pro", "S30", "S30 Pro"] %}
+                  <option value="{{ model }}" {% if model == planner_model %}selected{% endif %}>{{ model }}</option>
+                  {% endfor %}
+                </select>
+            </div>
+            <div class="control-cell">
+                <label for="astro_mosaic_grid_x" class="form-label">Grid Size</label>
+                <div class="grid-pair">
+                    <input type="number" class="form-control" id="astro_mosaic_grid_x" min="1" max="100" value="1" onchange="update_astro_mosaic()">
+                    <input type="number" class="form-control" id="astro_mosaic_grid_y" min="1" max="100" value="1" onchange="update_astro_mosaic()">
+                </div>
+            </div>
+            <div class="control-cell">
+                <label for="astro_mosaic_overlap" class="form-label">Overlap (%)</label>
+                <input type="number" class="form-control" id="astro_mosaic_overlap" min="1" max="100" value="20" onchange="update_astro_mosaic()">
+            </div>
+            <div class="control-cell">
+                <label for="repositionCheckbox" class="form-label">Reposition</label>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="repositionCheckbox" name="repositionCheckbox">
+                </div>
+            </div>
+            <div class="control-cell">
+                <label for="open_send_to_schedule_modal_btn" class="form-label">Send to Schedule</label>
+                 <button type="button" id="open_send_to_schedule_modal_btn" class="btn btn-primary" title="Send to Schedule">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-journal-arrow-up" viewBox="0 0 16 16">
+                        <path fill-rule="evenodd" d="M8 11a.5.5 0 0 0 .5-.5V6.707l1.146 1.147a.5.5 0 0 0 .708-.708l-2-2a.5.5 0 0 0-.708 0l-2 2a.5.5 0 1 0 .708.708L7.5 6.707V10.5a.5.5 0 0 0 .5.5"/>
+                        <path d="M3 0h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2v-1h1v1a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v1H1V2a2 2 0 0 1 2-2"/>
+                        <path d="M1 5v-.5a.5.5 0 0 1 1 0V5h.5a.5.5 0 0 1 0 1h-2a.5.5 0 0 1 0-1zm0 3v-.5a.5.5 0 0 1 1 0V8h.5a.5.5 0 0 1 0 1h-2a.5.5 0 0 1 0-1zm0 3v-.5a.5.5 0 0 1 1 0v.5h.5a.5.5 0 0 1 0 1h-2a.5.5 0 0 1 0-1z"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </fieldset>
+</div>
+<div id="aladin-div" style="height:500px; width: 100%;"></div>
+<div class="mt-2">
+    <div class="form-text">Each box below is one panel of the current mosaic grid, labeled with the order it is
+        captured in, its panel code (the same one used by "Selected Panels" and "Current Panel" on the
+        schedule, e.g. "21"), and its RA/Dec center. Arrows show the capture order: for each Dec row, every
+        RA panel in that row is captured in sequence, then the mount moves to the next Dec row and starts
+        again from the first RA panel (it does not alternate direction row to row).</div>
+    <div id="radec-div" style="width:100%; overflow-x:auto;"></div>
+</div>
+<div id="day-div" style="height:300px; width: 100%; max-width: 100% !important;"></div>
+<div id="year-div" style="height:300px; width: 100%; max-width: 100% !important;"></div>
+<div id="dayvisibility-panel-text" style="display: none;"></div>
+<div id="yearvisibility-panel-text" style="display: none;"></div>
+<div id="status-text" style="display: none;"></div>
+<div id="error-text" style="display: none;"></div>
+<dialog id="send_to_schedule_modal">
+    <form method="post" action="/{{ telescope['device_num'] }}/schedule/mosaic">
+        <div class="card border-primary mb-3">
+            <div class="card-body">
+                <h5 class="card-title">Target</h5>
+
+                <div class="mb-3 row">
+                    <div class="col">
+                        <label for="targetName" class="form-label">Target Name</label>
+                        <input type="text" class="form-control" id="targetName" name="targetName"
+                               aria-describedby="targetNameHelp" required>
+                        <div id="targetNameHelp" class="form-text">Enter a descriptive name for the target. (e.g. ...)</div>
+                    </div>
+                    <div class="col">
+                        <div class="d-flex align-items-center"> <!-- Wrap the radio buttons and button in a flex container -->
+                            <input class="form-check-input me-2" type="radio" name="searchFor" id="DS" checked>
+                            <label class="form-check-label" for="DS">Deepsky</label>
+                            <input class="form-check-input mx-2" type="radio" name="searchFor" id="PL">
+                            <label class="form-check-label" for="PL">Planet</label>
+                            <button type="button" id="getSimbad" class="btn btn-primary ms-2" title="Retrieve RA/Dec from Simbad" onclick="fetchCoordinates()">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-search" viewBox="0 0 16 16">
+                                    <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001q.044.06.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1 1 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0"/>
+                                </svg>
+                            </button>
+                        </div>
+                        <div class="form-text">Enter target name, select type, and press the button to retrieve RA/Dec from Simbad / Planet Server.</div>
+                    </div>
+                </div>
+
+                <div class="mb-3 row">
+                    <div class="col">
+                        <label for="ra" class="form-label">Right Ascension</label>
+                        <input type="text" class="form-control" id="ra" name="ra" aria-describedby="raHelp" required>
+                        <div id="raHelp" class="form-text">Mosaic center in decimal hours or hours/minutes/seconds (e.g. 1.2 or
+                            6h32m32.5s)
+                        </div>
+                    </div>
+                    <div class="col">
+                        <label for="getClipboard" class="form-label">&nbsp;</label><br>
+                        <button type="button" id="getStallarium" class="btn btn-primary" title="Parse RA/Dec from clipboard" onclick="fetchClipboard()">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard-fill" viewBox="0 0 16 16">
+                                <path fill-rule="evenodd" d="M10 1.5a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 .5-.5zm-5 0A1.5 1.5 0 0 1 6.5 0h3A1.5 1.5 0 0 1 11 1.5v1A1.5 1.5 0 0 1 9.5 4h-3A1.5 1.5 0 0 1 5 2.5zm-2 0h1v1A2.5 2.5 0 0 0 6.5 5h3A2.5 2.5 0 0 0 12 2.5v-1h1a2 2 0 0 1 2 2V14a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V3.5a2 2 0 0 1 2-2"/>
+                              </svg>
+                        </button>
+                        <div id="targetNameHelp" class="form-text">Paste RA/Dec from Clipboard</div>
+                    </div>
+
+                    <div class="col">
+                        <label for="raPanels" class="form-label">&nbsp;</label>
+                        <input type="text" class="form-control" id="raPanels" name="raPanels"
+                               aria-describedby="raPanelsHelp" required>
+                        <div id="raPanelsHelp" class="form-text">Number of RA panels</div>
+                    </div>
+                    <div class="col">
+                        <label for="getStallarium" class="form-label">&nbsp;</label><br>
+                        <button type="button" id="getStallarium" class="btn btn-primary" title="Copy RA/Dec from Stellarium" onclick="fetchStellarium()">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-star-fill" viewBox="0 0 16 16">
+                                <path d="M3.612 15.443c-.386.198-.824-.149-.746-.592l.83-4.73L.173 6.765c-.329-.314-.158-.888.283-.95l4.898-.696L7.538.792c.197-.39.73-.39.927 0l2.184 4.327 4.898.696c.441.062.612.636.282.95l-3.522 3.356.83 4.73c.078.443-.36.79-.746.592L8 13.187l-4.389 2.256z"/>
+                              </svg>
+                        </button>
+                        <div id="targetNameHelp" class="form-text">Retreive RA/Dec from Stellarium</div>
+                    </div>
+                </div>
+
+                <div class="mb-3 row">
+                    <div class="col">
+                        <label for="dec" class="form-label">Declination</label>
+                        <input type="text" class="form-control" id="dec" name="dec" aria-describedby="decHelp" required>
+                        <div id="decHelp" class="form-text">Mosaic center in decimal degrees or degrees/minutes/seconds (e.g. -1.2 or
+                            +6d32m32.5s)
+                        </div>
+                    </div>
+
+                    <div class="col">
+                        <label for="decPanels" class="form-label">&nbsp;</label>
+                        <input type="text" class="form-control" id="decPanels" name="decPanels"
+                               aria-describedby="decPanelsHelp" required>
+                        <div id="decPanelsHelp" class="form-text">Number of Dec panels</div>
+                    </div>
+                </div>
+
+                <div class="mb-3 row">
+                    <div class="mb-3 col">
+                        <label for="panelOverlap" class="form-label">Panel Overlap (%)</label>
+                        <input type="text" class="form-control" id="panelOverlap" name="panelOverlap"
+                           aria-describedby="panelOverlapHelp" required>
+                        <div id="panelOverlapHelp" class="form-text">Overlap of panels in percentage</div>
+                    </div>
+                    <div class="mb-3 col">
+                        <label for="panelSelect" class="form-label">Selected Panels (optional)</label>
+                        <input type="text" class="form-control" id="panelSelect" name="panelSelect"
+                            aria-describedby="panelSelectHelp">
+                        <div id="panelSelectHelp" class="form-text">Semicolon delimited list of panels you want to image.
+                            Each panel is identified by its RA panel number followed by its Dec panel number, e.g.
+                            <code>11;21</code> images the panel at RA position 1/Dec position 1 and the panel at
+                            RA position 2/Dec position 1. This same code (e.g. "21") is shown as "Current Panel"
+                            while a mosaic is running, and is appended to the saved image name (e.g. "M31_21").</div>
+                    </div>
+                </div>
+                <div class="mb-3 row">
+                    <div class="col">
+                        <div class="form-text">Panels are imaged in a fixed grid order: for each Dec row, every RA
+                            panel in that row is captured in sequence, then the mount moves to the next Dec row and
+                            starts again from the first RA panel (it does not alternate direction row to row).
+                            Example for a 3&times;3 mosaic:</div>
+                        {{ mosaic_diagrams.mosaic_order_example('mosaicOrderArrowDialog') }}
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="useJ2000" name="useJ2000" checked>
+                        <label class="form-check-label" for="useJ2000">
+                            Use J2000?
+                        </label>
+                    </div>
+                </div>
+                {% if telescope["device_num"] == 0 %}
+                    <div class="mb-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="array_mode" name="array_mode" value="split">
+                            <label class="form-check-label" for="array_mode">
+                                Split Mosaic Across Multiple Seestar?
+                            </label>
+                        </div>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card border-primary mb-3">
+            <div class="card-body">
+                <h5 class="card-title">Exposure</h5>
+
+                <div class="mb-3">
+                    <label for="panelTime" class="form-label">Panel Acquisition Time (per panel)</label>
+                    <input type="text" class="form-control" id="panelTime" name="panelTime"
+                           aria-describedby="panelTimeHelp" required>
+                    <div id="panelTimeHelp" class="form-text">How much time to acquire data for each panel (ex: 1h 30m or 5400).
+                        This is applied per panel, not split across the whole mosaic.
+                    </div>
+                    <div id="mosaicTotalTimeHelp" class="form-text">Total acquisition time: <span id="mosaicTotalTime">-</span>
+                        (excludes slewing, autofocus, and retries)</div>
+                </div>
+
+                <div class="mb-3">
+                        <input type="text" class="form-control" id="gain" name="gain" aria-describedby="gainHelp" value="80" required>
+                    <div id="gainHelp" class="form-text">Gain. (ex: 80)</div>
+                </div>
+
+                <div class="mb-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="useLpFilter" name="useLpFilter">
+                        <label class="form-check-label" for="useLpFilter">
+                            Use Light Pollution Filter?
+                        </label>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="useAutoFocus" name="useAutoFocus">
+                        <label class="form-check-label" for="useAutoFocus">
+                            Use Auto Focus on every panel?
+                        </label>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary">Submit</button><button type="reset" class="btn btn-primary float-end" id="close_send_to_schedule_modal_btn">Close</button>
+    </form>
+</dialog>
+<script>
+    // 1. DEFAULT SETTINGS & VARIABLES
+    var isProgrammaticUpdate = false;
+    var viewer_params = {
+        fov_x: 43.8,
+        fov_y: 77.4,
+        grid_type: "fov",
+        grid_size_x: 1,
+        grid_size_y: 1,
+        grid_overlap: 20,
+        location_lat: 32.92,
+        location_lng: -96.72,
+        horizonSoft: null,
+        horizonHard: [30],
+        meridian_transit: null,
+        UTCdate_ms: null,
+        timezoneOffset: -5,
+        isCustomMode: true,
+        chartTextColor: "white",
+        gridlinesColor: "gray",
+        backgroundColor: "black",
+        isRepositionModeFunc: function() {
+            var isChecked = document.getElementById("repositionCheckbox").checked;
+            return isChecked;
+        },
+        repositionTargetFunc: function(target_str) {
+            isProgrammaticUpdate = true;
+            document.getElementById("astro_mosaic_search_text").value = target_str;
+            setTimeout(function() { isProgrammaticUpdate = false; }, 100);
+        }
+    };
+    var astro_mosaic = null;
+
+    // ADD THIS FUNCTION - it's required by the engine
+    function getAstroMosaicFov(fov) {
+        return (fov * 60.0) / 3600.0;
+    }
+
+    function fillHorizonLimits(horizon_limits) {
+        if (horizon_limits == null || horizon_limits.length == 0) {
+            horizon_limits = [0];
+        }
+        var len = horizon_limits.length;
+        if (len < 71) {
+            var last = horizon_limits[len-1];
+            for (var k = len; k < 71; k++) {
+                horizon_limits[k] = last;
+            }
+        }
+        return horizon_limits;
+    }
+
+    // 2. GOOGLE CHARTS LOAD AND INIT
+    google.charts.load('current', {'packages':['corechart']});
+    google.charts.setOnLoadCallback(initAstroMosaic);
+
+    function initAstroMosaic() {
+        update_astro_mosaic();
+
+        // Start monitoring checkbox state
+        setInterval(function() {
+            var isChecked = document.getElementById("repositionCheckbox").checked;
+        }, 3000);
+    }
+
+    // 3. MAIN UPDATE FUNCTION
+    function update_astro_mosaic() {
+        if (isProgrammaticUpdate) {
+            return;
+        }
+
+        const search_text = document.getElementById("astro_mosaic_search_text").value;
+        const grid_x = Number(document.getElementById("astro_mosaic_grid_x").value);
+        const grid_y = Number(document.getElementById("astro_mosaic_grid_y").value);
+        const overlap = Number(document.getElementById("astro_mosaic_overlap").value);
+        const seestar = document.getElementById("seestar").value;
+
+        const fov = window.seestarFov();
+        viewer_params.fov_x = fov.fov_x;
+        viewer_params.fov_y = fov.fov_y;
+
+        if (grid_x === 1 && grid_y === 1) {
+            viewer_params.grid_type = "fov";
+            viewer_params.grid_size_x = 1;
+            viewer_params.grid_size_y = 1;
+            viewer_params.grid_overlap = 100;
+        } else {
+            viewer_params.grid_type = "mosaic";
+            viewer_params.grid_size_x = grid_x;
+            viewer_params.grid_size_y = grid_y;
+            viewer_params.grid_overlap = overlap;
+        }
+
+        viewer_params.am_fov_x = (viewer_params.fov_x * 60.0) / 3600.0;
+        viewer_params.am_fov_y = (viewer_params.fov_y * 60.0) / 3600.0;
+
+        if (viewer_params.UTCdate_ms == null) {
+            var d = new Date();
+            viewer_params.UTCdate_ms = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0);
+        }
+
+        astro_mosaic = StartAstroMosaicViewerEngine(
+            "all",
+            search_text,
+            viewer_params,
+            {
+                aladin_panel: "aladin-div",
+                aladin_panel_text: "radec-div",
+                dayvisibility_panel: "day-div",
+                dayvisibility_panel_text: "dayvisibility-panel-text",
+                yearvisibility_panel: "year-div",
+                yearvisibility_panel_text: "yearvisibility-panel-text",
+                status_text: "status-text",
+                error_text: "error-text",
+                panel_view_x: null,
+                panel_view_y: null,
+                panel_view_div: null,
+                panel_view_text: null
+            },
+            null,
+            viewer_params.grid_overlap ? viewer_params.grid_overlap : 20,
+            {
+                isRepositionModeFunc: viewer_params.isRepositionModeFunc,
+                repositionTargetFunc: viewer_params.repositionTargetFunc,
+                sun_rise_set: function(midday, lat, lon, h) { return {sunset: 0, sunrise: 0}; },
+                object_altitude_init: function(date, lat, lng) { return {}; },
+                object_altaz: function(date, ra, dec, lat, lng) { return {alt: 0, az: 0}; },
+                object_altitude_get: function(aa, ra, dec) { return 0; },
+                moon_position: function(date) { return {ra: 0, dec: 0}; },
+                moon_topocentric_correction: function(alt) { return 0; },
+                moon_distance: function(ra1, dec1, ra2, dec2) { return 0; },
+                getTargetAboveRightNow: function(lat, lng, date) { return [0, 0]; }
+            }
+        );
+    }
+
+    // 4. RESIZE DEBOUNCE
+    let astro_mosaic_resizeTimeout;
+    window.addEventListener('resize', () => {
+        clearTimeout(astro_mosaic_resizeTimeout);
+        astro_mosaic_resizeTimeout = setTimeout(() => {
+            update_astro_mosaic();
+        }, 300);
+    });
+
+    // 5. MODAL FUNCTIONS
+    const send_to_schedule_modal = document.getElementById("send_to_schedule_modal");
+    const open_send_to_schedule_modal_btn = document.getElementById("open_send_to_schedule_modal_btn");
+    const close_send_to_schedule_modal_btn = document.getElementById("close_send_to_schedule_modal_btn");
+
+    function parseDurationToSeconds(text) {
+        text = (text || "").trim().toLowerCase();
+        if (/^\d+(\.\d+)?$/.test(text)) {
+            return parseFloat(text);
+        }
+        const match = text.match(/^(?:(\d+(?:\.\d+)?)\s*h\s*)?(?:(\d+(?:\.\d+)?)\s*m\s*)?(?:(\d+(?:\.\d+)?)\s*s\s*)?$/);
+        if (!match || (!match[1] && !match[2] && !match[3])) {
+            return null;
+        }
+        return (parseFloat(match[1] || 0) * 3600) + (parseFloat(match[2] || 0) * 60) + parseFloat(match[3] || 0);
+    }
+
+    function formatSecondsAsHms(totalSeconds) {
+        totalSeconds = Math.round(totalSeconds);
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        return String(hours).padStart(2, "0") + ":" + String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
+    }
+
+    function updateMosaicTotalTime() {
+        // Scoped to the dialog: the Planning page also hosts the Framed
+        // Mosaic card, so a bare document.getElementById could pick up
+        // that card's fields if id collisions are ever introduced.
+        const totalTimeEl = send_to_schedule_modal.querySelector("#mosaicTotalTime");
+        if (!totalTimeEl) {
+            return;
+        }
+        const panelTimeSec = parseDurationToSeconds(send_to_schedule_modal.querySelector("#panelTime").value);
+        const selectedPanels = (send_to_schedule_modal.querySelector("#panelSelect").value || "").trim();
+        let panelCount;
+        if (selectedPanels) {
+            panelCount = selectedPanels.split(";").length;
+        } else {
+            const raPanels = parseInt(send_to_schedule_modal.querySelector("#raPanels").value, 10);
+            const decPanels = parseInt(send_to_schedule_modal.querySelector("#decPanels").value, 10);
+            panelCount = (raPanels || 0) * (decPanels || 0);
+        }
+        if (panelTimeSec === null || !panelCount) {
+            totalTimeEl.textContent = "-";
+            return;
+        }
+        totalTimeEl.textContent = formatSecondsAsHms(panelTimeSec * panelCount);
+    }
+
+    ["raPanels", "decPanels", "panelTime", "panelSelect"].forEach(function (id) {
+        const el = send_to_schedule_modal.querySelector("#" + id);
+        if (el) {
+            el.addEventListener("input", updateMosaicTotalTime);
+        }
+    });
+
+    function show_send_to_schedule_modal() {
+        astro_mosaic_grid_x = document.getElementById('astro_mosaic_grid_x').value;
+        astro_mosaic_grid_y = document.getElementById('astro_mosaic_grid_y').value;
+        document.getElementById('targetName').value = document.getElementById('astro_mosaic_search_text').value;
+        document.getElementById('raPanels').value = astro_mosaic_grid_x;
+        document.getElementById('decPanels').value = astro_mosaic_grid_y;
+        document.getElementById('useJ2000').checked = true;
+        if(astro_mosaic_grid_x == 1 && astro_mosaic_grid_y ==1){
+            document.getElementById('panelOverlap').value = 100
+        }else{
+            document.getElementById('panelOverlap').value = document.getElementById('astro_mosaic_overlap').value;
+        }
+        aladin_radec = document.querySelector(".search").value;
+        const aladin_radec_array = aladin_radec.split(" ");
+        aladin_ra = aladin_radec_array[0] + "h" + aladin_radec_array[1] + "m" + aladin_radec_array[2] + "s";
+        aladin_dec = aladin_radec_array[3] + "d" + aladin_radec_array[4] + "m" + aladin_radec_array[5] + "s";
+        document.getElementById('ra').value = aladin_ra;
+        document.getElementById('dec').value = aladin_dec;
+        updateMosaicTotalTime();
+        send_to_schedule_modal.showModal();
+    }
+
+    function close_send_to_schedule_modal() {
+        send_to_schedule_modal.close();
+    }
+
+    document.addEventListener('click', (event) => {
+        if (event.target === send_to_schedule_modal) {
+            send_to_schedule_modal.close();
+        }
+    });
+
+    open_send_to_schedule_modal_btn.addEventListener("click", show_send_to_schedule_modal);
+    close_send_to_schedule_modal_btn.addEventListener("click", close_send_to_schedule_modal);
+</script>

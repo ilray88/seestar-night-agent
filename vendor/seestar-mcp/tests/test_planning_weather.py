@@ -1,0 +1,273 @@
+"""Tests for seestar_mcp.planning.weather.
+
+Uses ``respx`` to mock the single outbound Open-Meteo HTTPS GET (the only
+network call in the whole planner). ``asyncio_mode=auto`` means async tests need
+no decorator, but ``@respx.mock`` is applied per test. The key invariant under
+test: a weather failure is NON-FATAL — it yields ``go=None``/``source="unknown"``
+rather than raising, so planning can proceed on observability alone.
+"""
+
+from __future__ import annotations
+
+import httpx
+import respx
+
+from seestar_mcp.planning.site import SiteProfile
+from seestar_mcp.planning.weather import (
+    ConditionsAssessment,
+    MeteoblueSource,
+    OpenMeteoSource,
+    assess_conditions,
+)
+
+SITE = SiteProfile(name="x", lat_deg=40.0, lon_deg=-74.0)
+WINDOW = ("2026-07-05T02:00:00Z", "2026-07-05T08:00:00Z")
+
+
+@respx.mock
+async def test_clear_night_is_go():
+    respx.get(url__startswith="https://api.open-meteo.com/v1/forecast").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "hourly": {
+                    "time": ["2026-07-05T02:00", "2026-07-05T03:00"],
+                    "cloudcover_low": [0, 5],
+                    "cloudcover_mid": [0, 0],
+                    "cloudcover_high": [10, 10],
+                    "relativehumidity_2m": [60, 62],
+                    "dewpoint_2m": [8, 8],
+                    "temperature_2m": [18, 17],
+                    "windspeed_10m": [5, 6],
+                    "precipitation_probability": [0, 0],
+                }
+            },
+        )
+    )
+    a = await assess_conditions(SITE, WINDOW, moon_illum_frac=0.1)
+    assert a.go is True
+    assert a.suitability >= 60
+    assert a.source == "open-meteo"
+    assert a.cloud_cover_pct == 10.0
+    assert a.dew_risk == "low"
+    assert a.wind_kph == 6.0
+    assert a.moon_illum_frac == 0.1
+    assert a.dark_window_utc == WINDOW
+
+
+@respx.mock
+async def test_heavily_clouded_is_no_go():
+    respx.get(url__startswith="https://api.open-meteo.com/v1/forecast").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "hourly": {
+                    "time": ["2026-07-05T02:00", "2026-07-05T03:00"],
+                    "cloudcover_low": [90, 95],
+                    "cloudcover_mid": [80, 85],
+                    "cloudcover_high": [70, 60],
+                    "relativehumidity_2m": [95, 96],
+                    "dewpoint_2m": [16, 16],
+                    "temperature_2m": [17, 17],
+                    "windspeed_10m": [10, 12],
+                    "precipitation_probability": [80, 90],
+                }
+            },
+        )
+    )
+    a = await assess_conditions(SITE, WINDOW, moon_illum_frac=0.1)
+    assert a.go is False
+    assert a.cloud_cover_pct == 95.0
+    # A cloud reason must be present and human-readable.
+    assert any("cloud" in r.lower() for r in a.reasons)
+    assert a.source == "open-meteo"
+
+
+@respx.mock
+async def test_network_failure_is_unknown_not_fatal():
+    respx.get(url__startswith="https://api.open-meteo.com").mock(
+        side_effect=httpx.ConnectError("down")
+    )
+    a = await assess_conditions(SITE, WINDOW, moon_illum_frac=0.1)
+    assert isinstance(a, ConditionsAssessment)
+    assert a.go is None
+    assert a.source == "unknown"
+    assert a.suitability == 0
+    assert a.cloud_cover_pct is None
+    assert a.dew_risk == "unknown"
+    assert a.wind_kph is None
+    assert "manual" in " ".join(a.reasons).lower()
+    # Non-fatal: the caller-supplied moon + window still surface.
+    assert a.moon_illum_frac == 0.1
+    assert a.dark_window_utc == WINDOW
+
+
+@respx.mock
+async def test_malformed_json_is_unknown_not_fatal():
+    # Shape error (missing "hourly") must be caught like a network error.
+    respx.get(url__startswith="https://api.open-meteo.com/v1/forecast").mock(
+        return_value=httpx.Response(200, json={"unexpected": True})
+    )
+    a = await assess_conditions(SITE, WINDOW, moon_illum_frac=0.5)
+    assert a.go is None
+    assert a.source == "unknown"
+
+
+@respx.mock
+async def test_bright_moon_lowers_suitability_but_weather_drives_go():
+    payload = {
+        "hourly": {
+            "time": ["2026-07-05T02:00", "2026-07-05T03:00"],
+            "cloudcover_low": [0, 0],
+            "cloudcover_mid": [0, 0],
+            "cloudcover_high": [0, 0],
+            "relativehumidity_2m": [50, 50],
+            "dewpoint_2m": [5, 5],
+            "temperature_2m": [18, 18],
+            "windspeed_10m": [5, 5],
+            "precipitation_probability": [0, 0],
+        }
+    }
+    route = respx.get(url__startswith="https://api.open-meteo.com/v1/forecast")
+    route.mock(return_value=httpx.Response(200, json=payload))
+    dark = await assess_conditions(SITE, WINDOW, moon_illum_frac=0.0)
+    route.mock(return_value=httpx.Response(200, json=payload))
+    bright = await assess_conditions(SITE, WINDOW, moon_illum_frac=1.0)
+    # Full moon costs some suitability but does not flip the weather verdict.
+    assert bright.suitability < dark.suitability
+    assert bright.go is True and dark.go is True
+
+
+@respx.mock
+async def test_openmeteo_source_directly_and_query_params():
+    route = respx.get("https://api.open-meteo.com/v1/forecast").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "hourly": {
+                    "time": ["2026-07-05T01:00", "2026-07-05T02:00", "2026-07-05T09:00"],
+                    "cloudcover_low": [50, 20, 99],
+                    "cloudcover_mid": [0, 0, 0],
+                    "cloudcover_high": [0, 0, 0],
+                    "relativehumidity_2m": [70, 70, 99],
+                    "dewpoint_2m": [10, 10, 10],
+                    "temperature_2m": [12, 12, 12],
+                    "windspeed_10m": [30, 30, 99],
+                    "precipitation_probability": [10, 10, 99],
+                }
+            },
+        )
+    )
+    a = await OpenMeteoSource().assess(SITE, WINDOW)
+    assert route.called
+    request = route.calls.last.request
+    params = request.url.params
+    assert params["latitude"] == "40.0"
+    assert params["longitude"] == "-74.0"
+    assert params["timezone"] == "UTC"
+    assert params["forecast_days"] == "2"
+    assert "cloudcover_low" in params["hourly"]
+    # Only the in-window rows (02:00) are considered — the 01:00 and 09:00 rows,
+    # with their extreme values, are filtered out.
+    assert a.cloud_cover_pct == 20.0
+    assert a.wind_kph == 30.0
+
+
+@respx.mock
+async def test_meteoblue_used_with_key_and_go():
+    # meteoblue returns LOCAL times (utc_timeoffset); the source shifts them to
+    # UTC to match the window. Local 22:00/23:00 @ -4 -> UTC 02:00/03:00 (in WINDOW).
+    respx.get(url__startswith="https://my.meteoblue.com/packages/").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "metadata": {"utc_timeoffset": -4.0},
+                "data_1h": {
+                    "time": ["2026-07-04 22:00", "2026-07-04 23:00"],
+                    "temperature": [18, 17],
+                    "relativehumidity": [60, 62],
+                    "windspeed": [1.5, 1.7],  # m/s
+                    "precipitation_probability": [0, 0],
+                },
+                # Clouds arrive 3-hourly (clouds-1h is paid on the free tier).
+                "data_3h": {
+                    "time": ["2026-07-04 22:00", "2026-07-05 01:00"],
+                    "lowclouds": [0, 5],
+                    "midclouds": [0, 0],
+                    "highclouds": [10, 10],
+                },
+            },
+        )
+    )
+    a = await assess_conditions(SITE, WINDOW, moon_illum_frac=0.1, api_key="testkey")
+    assert a.source == "meteoblue"
+    assert a.go is True
+    assert a.cloud_cover_pct == 10.0  # worst layer over window
+    assert a.dew_risk == "low"
+    assert round(a.wind_kph, 1) == round(1.7 * 3.6, 1)  # m/s -> kph, max over window
+
+
+@respx.mock
+async def test_meteoblue_malformed_is_unknown_not_fatal():
+    respx.get(url__startswith="https://my.meteoblue.com/packages/").mock(
+        return_value=httpx.Response(200, json={"nope": True})
+    )
+    a = await assess_conditions(SITE, WINDOW, moon_illum_frac=0.0, api_key="k")
+    assert a.go is None
+    assert a.source == "unknown"
+
+
+def test_resolve_source_picks_backend():
+    from seestar_mcp.planning.weather import (
+        MeteoblueSource,
+        OpenMeteoSource,
+        resolve_source,
+    )
+
+    assert isinstance(resolve_source("abc"), MeteoblueSource)
+    assert isinstance(resolve_source(""), OpenMeteoSource)
+    assert isinstance(resolve_source(None), OpenMeteoSource)
+    assert isinstance(resolve_source("   "), OpenMeteoSource)  # whitespace = none
+
+
+# --- credential safety (reported by the SeeStar Console team, 2026-08-01) ------
+
+_LEAK_KEY = "SUPERSECRETKEY123"
+
+
+@respx.mock
+async def test_meteoblue_http_error_never_leaks_the_api_key():
+    """A non-2xx meteoblue response must not put the API key into an exception.
+
+    httpx embeds the full request URL in ``HTTPStatusError``, and the key travels
+    as an ``apikey`` query parameter. ``HTTPStatusError`` is a SIBLING of
+    ``RequestError``, not a subclass, so a handler catching only ``RequestError``
+    lets it escape — carrying the key into the error text, the tool's error
+    envelope, and any consumer that renders it. The Console team observed exactly
+    that reaching their DOM on a 401.
+
+    A non-2xx must degrade to the same non-fatal "unknown" as any other outage.
+    """
+    respx.get(url__startswith="https://my.meteoblue.com").mock(
+        return_value=httpx.Response(401, json={"error": "unauthorized"})
+    )
+    source = MeteoblueSource(api_key=_LEAK_KEY)
+    assessment = await source.assess(SITE, WINDOW)  # must not raise
+
+    assert isinstance(assessment, ConditionsAssessment)
+    assert assessment.source == "unknown"
+    assert assessment.go is None
+    # Nothing the caller can see may echo the key.
+    assert _LEAK_KEY not in repr(assessment)
+    assert _LEAK_KEY not in " ".join(assessment.reasons)
+
+
+@respx.mock
+async def test_open_meteo_http_error_is_also_non_fatal():
+    """The keyless source needs the same guard: a 500 must not raise."""
+    respx.get(url__startswith="https://api.open-meteo.com").mock(
+        return_value=httpx.Response(500, text="upstream boom")
+    )
+    assessment = await assess_conditions(SITE, WINDOW, moon_illum_frac=0.1)
+    assert assessment.source == "unknown"
+    assert assessment.go is None

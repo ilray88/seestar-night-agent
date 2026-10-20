@@ -1,0 +1,189 @@
+{% extends 'base.html' %}
+
+{% block header %}
+    <div class="page-hero">
+        <div>
+            <p class="page-kicker">Automation</p>
+            <h1 class="page-title">{% block title %}Schedule Page{% endblock %}</h1>
+            <p class="page-subtitle">{{ telescope["name"] }} ({{ telescope["ip_address"] }})</p>
+        </div>
+    </div>
+{% endblock %}
+
+{% block content %}
+  <div class="panel-card">
+    <h2 class="panel-title mb-3">Current Schedule</h2>
+
+    <div id="schedule-status" class="mb-3">
+      <div class="panel-card panel-card-tight mb-0">
+        <span id="state_span"> {% include 'partials/schedule_state.html' %}</span>
+      </div>
+    </div>
+
+    <form id="scheduleForm" action="{{ root }}/schedule/delete" method="post" enctype="application/x-www-form-urlencoded">
+
+      <div id="schedule-head" class="panel-card panel-card-tight">
+        <div class="row fw-bold border-bottom py-1 text-start">
+          <div class="col-2 align-self-start">Target</div>
+          <div class="col-2 align-self-start">Param</div>
+          <div class="col align-self-start">Panels</div>
+          <div class="col align-self-start">Ov%</div>
+          <div class="col align-self-start">J2000</div>
+          <div class="col align-self-start">Exp</div>
+          <div class="col align-self-start">Gain</div>
+          <div class="col align-self-start">LP</div>
+          <div class="col align-self-start">AF</div>
+          <div class="col-2 align-self-start">Selected Panels</div>
+        </div>
+      </div>
+
+      <div id="schedule-body" class="panel-card panel-card-tight mt-3">
+        {% include 'partials/schedule_list.html' %}
+      </div>
+
+      <div id="schedule-buttons-top" class="panel-card panel-card-tight mt-3">
+        <div class="action-row">
+          {% if schedule.list %}
+            <button type="submit" class="btn btn-danger" name="action" value="delete" title="Delete the selected schedule item">Delete</button>
+            <button type="submit" class="btn btn-primary" name="action" value="append" formaction="{{ root }}/schedule/{{ tab }}" title="Add a schedule item to bottom of schedule">Append</button>
+            <button type="submit" class="btn btn-secondary" name="action" value="insert" formaction="{{ root }}/schedule/{{ tab }}" title="Insert a schedule item before the selected item">Insert</button>
+          {% else %}
+            <button type="submit" class="btn btn-primary" name="action" value="append" formaction="{{ root }}/schedule/{{ tab }}" title="Add a schedule item to bottom of schedule">Add</button>
+          {% endif %}
+        </div>
+      </div>
+
+
+      <p class="panel-muted mt-3">Pick an item to schedule, then submit to add it.</p>
+
+      {% include 'partials/schedule_tab_header.html' with context %}
+
+      <div class="tab-content panel-card">
+        <div class="tab-pane fade show active" role="tabpanel" aria-labelledby="auto-focus-tab">
+          {% block schedule_tab_content %}{% endblock %}
+        </div>
+      </div>
+
+      <div id="schedule-buttons-bottom" class="panel-card panel-card-tight mt-3">
+        <div class="action-row">
+          {% if schedule.list %}
+            <button type="submit" class="btn btn-danger" name="action" value="delete" title="Delete the selected schedule item">Delete</button>
+            <button type="submit" class="btn btn-primary" name="action" value="append" formaction="{{ root }}/schedule/{{ tab }}" title="Add a schedule item to bottom of schedule">Append</button>
+            <button type="submit" class="btn btn-secondary" name="action" value="insert" formaction="{{ root }}/schedule/{{ tab }}" title="Insert a schedule item before the selected item">Insert</button>
+          {% else %}
+            <button type="submit" class="btn btn-primary" name="action" value="append" formaction="{{ root }}/schedule/{{ tab }}" title="Add a schedule item to bottom of schedule">Add</button>
+          {% endif %}
+        </div>
+      </div>
+
+    </form>
+  </div>
+
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+        const form = document.getElementById("scheduleForm");
+        
+        // Clear any previously stored accordion state on form load
+        localStorage.removeItem('openAccordionId');
+
+        form.addEventListener("submit", function (event) {
+            const checkboxes = document.querySelectorAll('input[name="selected_items"]:checked');
+            const buttonClicked = event.submitter;
+
+            if (buttonClicked) {
+                if (buttonClicked.name === "action") {
+                    if (buttonClicked.value === "insert" && checkboxes.length !== 1) {
+                        alert("Please select exactly one item to insert before.");
+                        event.preventDefault();
+                        return;
+                    }
+                    if (buttonClicked.value === "delete" && checkboxes.length === 0) {
+                        alert("Please select at least one item to delete.");
+                        event.preventDefault();
+                        return;
+                    }
+                }
+            }
+        });
+    });
+
+// Track previous state
+let previousScheduleState = null;
+
+document.addEventListener("DOMContentLoaded", function () {
+    function checkScheduleState() {
+        const openAccordionId = localStorage.getItem('openAccordionId') || '';
+        fetch(`{{ root }}/schedule/refresh?open_accordion_id=${encodeURIComponent(openAccordionId)}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.state === "working") {
+                    console.log("Schedule is working, refreshing...");
+                    if (data.changed && data.html) {
+                        document.getElementById("schedule-body").innerHTML = data.html;
+                    }
+                    setTimeout(checkScheduleState, 5000);  // Keep checking every 5s
+                } else {
+                    // Detect transition from 'working' to 'complete'
+                    if (previousScheduleState === "working" && data.state === "complete") {
+                        console.log("Schedule is complete!");
+                        fetch("{{ root }}/schedule/restart_schedule")
+                            .then(response => response.json())
+                            .then(restartData => {
+                                  document.getElementById("schedule-body").innerHTML = restartData.html;
+                                  document.getElementById("state_span").innerHTML = restartData.state_html;
+                                  htmx.process(document.getElementById("schedule-status"));
+                                  // Clear any stored accordion state when schedule is complete
+                                  localStorage.removeItem('openAccordionId');
+                                  console.log("Schedule restarted successfully.");
+                            })
+                            .catch(error => console.error("Error restarting schedule:", error));  
+                    }
+                    setTimeout(checkScheduleState, 5000);  // Keep polling
+                }
+                previousScheduleState = data.state;
+            })
+            .catch(error => console.error("Error refreshing schedule:", error));
+    }
+
+    // Start checking state on page load
+    checkScheduleState();
+});
+
+
+
+
+//  This script manages the persistence of the open state for Bootstrap accordions using localStorage.
+//  - On page load, if an 'openAccordionId' exists in localStorage, it is removed to reset the accordion state.
+//  This ensures that the accordion's open state does not persist across page reloads.
+
+
+// Accordion open state persistence
+document.addEventListener("DOMContentLoaded", function () {
+  // Listen for accordion open events
+  document.body.addEventListener('show.bs.collapse', function (event) {
+    if (event.target.classList.contains('accordion-collapse')) {
+      localStorage.setItem('openAccordionId', event.target.id);
+    }
+  });
+
+  // Listen for accordion close events
+  document.body.addEventListener('hide.bs.collapse', function (event) {
+    if (event.target.classList.contains('accordion-collapse')) {
+      localStorage.removeItem('openAccordionId');
+    }
+  });
+
+  // On page load, remove the saved accordion if present
+  const openAccordionId = localStorage.getItem('openAccordionId');
+  if (openAccordionId) {
+    localStorage.removeItem('openAccordionId');
+  }
+});
+
+  </script>
+
+  <footer class="footer-meta">
+    Version: {{ version }}
+  </footer>
+
+{% endblock %}

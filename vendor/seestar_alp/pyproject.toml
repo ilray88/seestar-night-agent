@@ -1,0 +1,77 @@
+[project]
+name = "seestar-alp-upstream"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dynamic = ["dependencies"]
+
+[tool.setuptools.packages.find]
+# Restrict auto-discovery to actual Python packages; excludes non-package
+# top-level dirs (mac, linux, docker, simulator, etc.) that confuse setuptools.
+include = ["imaging*", "lib*", "schedule*"]
+
+[tool.setuptools.dynamic]
+# requirements.txt is the single source of truth for pinned versions --
+# this used to be a second, hand-maintained copy of the same list that
+# drifted out of sync (numpy==1.26.4 here vs numpy==2.3.2 in
+# requirements.txt being the one that broke CI: numpy 1.26.4 has no cp313
+# wheel, forcing a source build that hit a broken pythran/GCC toolchain).
+# `pip install -e '.[system]'` now installs the exact same pins
+# `pip install -r requirements.txt` already resolved, so it's a no-op
+# reinstall rather than a silent downgrade-and-rebuild.
+dependencies = { file = ["requirements.txt"] }
+
+[project.optional-dependencies]
+system = [
+    "pytest-playwright>=0.5",
+]
+
+[tool.uv.sources]
+pyindi = { git = "https://github.com/MMTObservatory/pyINDI.git", rev = "c12590fbe310c34cadb03713051789a4d76d80c7" }
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+ignore = [
+    "E722",  # Do not use bare `except`
+    "F405",  # may be undefined, or defined from star imports
+    "F403",  # * used; unable to detect undefined names
+]
+exclude = [
+    "templates/*",
+    "scripts/*",
+    "indi/*",
+    "device/rotator.py",
+]
+
+[tool.ruff.format]
+exclude = [
+    "templates/*",
+    "scripts/*",
+    "indi/*"
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-cov>=6.1.1",
+    "pytest-mock>=3.14.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+markers = [
+    "integration: end-to-end integration tests that may use sockets/processes",
+    "system: manual-only system tests against a real Seestar or the QEMU emulator; never auto-selected, requires --target",
+    "smoke: tests/system subset requiring no plate-solving (startup w/o 3PPA, live-view) — used by the always-on CI emulator-smoke lane",
+    "full: tests/system subset requiring plate-solving (3PPA, goto, schedule) — used by the label/nightly-gated CI emulator-full lane",
+]
+filterwarnings = [
+    "ignore:datetime\\.datetime\\.utcfromtimestamp\\(\\) is deprecated.*:DeprecationWarning",
+]
+
+[tool.coverage.run]
+disable_warnings = ["couldnt-parse"]

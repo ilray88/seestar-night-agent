@@ -1,0 +1,22 @@
+Change Log
+
+Version 1.0.0.a4 - June 22, 2024
+Added retry to connection to seestar
+
+Version 1.0.0.a3 - June 16, 2024
+made changes to supprt use of pyinstaller to simplify distrubution - rrowley
+
+version 1.0.0a2 - April 30, 2024
+----------------
+Added support for J2000
+Updated logic for Mosaic Panel Overlap
+- base on overlap percentage
+- spacing depends on dec position for more accurate spacing
+- added more API examples
+- bug fixes
+
+
+
+version 1.0.0a1
+----------------
+initial release

@@ -1,0 +1,23 @@
+meta {
+  name: goto_target
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{base_url}}/api/v1/telescope/{{dev_num}}/action
+  body: formUrlEncoded
+  auth: none
+}
+
+headers {
+  Content-Type: application/x-www-form-urlencoded
+  Accept: application/json
+}
+
+body:form-urlencoded {
+  Action: goto_target
+  Parameters: {"target_name":"kai32_NGC2244", "ra":"6h31m54.23s", "dec":"+4d56m26.4s", "is_j2000":true}
+  ClientID: 1
+  ClientTransactionID: 999
+}

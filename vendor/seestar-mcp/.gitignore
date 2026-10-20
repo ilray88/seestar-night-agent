@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+
+# uv
+# NOTE: uv.lock IS committed (reproducible builds) — do not ignore it.
+
+# Local data / secrets (never commit)
+data/
+# ...but the bundled DSO catalog (package data) IS committed.
+!src/seestar_mcp/planning/data/
+!src/seestar_mcp/planning/data/dso_catalog.json
+*.fit
+*.fits
+!tests/fixtures/*.fits
+.env
+secrets/
+*.pem
+*.key
+
+# Docker local config / secrets (commit only the .example templates)
+deploy/docker/.env.docker
+deploy/docker/config.toml
+
+# SBOM output
+sbom*.json
+sbom*.xml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code local/personal settings (per-machine, not shared)
+.claude/settings.local.json
+CLAUDE.local.md

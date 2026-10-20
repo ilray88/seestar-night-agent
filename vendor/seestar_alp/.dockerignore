@@ -1,0 +1,6 @@
+docker/**
+bruno/**
+device/config.toml
+!docker/entrypointALPACA.sh
+!docker/entrypointINDI.sh
+
