@@ -79,7 +79,7 @@ name = "Seestar S30 Pro"
 # Preferred: put the scope in STATION mode (joins your home WiFi) and set a
 # DHCP reservation, then put that fixed IP here. "seestar.local" works only on
 # some networks and only while the scope's own AP is reachable.
-ip_address = "192.168.2.118"
+ip_address = "192.168.20.90"
 device_num = 1
 # Set to true when this entry points at the QEMU emulator (emulator/), not real
 # hardware, to suppress the firmware-auth warning banner. The emulator always

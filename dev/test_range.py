@@ -1,5 +1,5 @@
 ﻿import urllib.request, urllib.parse
-host="192.168.2.118"
+host="192.168.20.90"
 def head(p):
     url=f"http://{host}/{urllib.parse.quote(p)}"
     req=urllib.request.Request(url, method="GET", headers={"Range":"bytes=0-0"})

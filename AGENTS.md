@@ -24,7 +24,7 @@
 | 设备 | ZWO Seestar S30 Pro（30mm / f5 / 150mm，输出 2160×3840 竖幅，**无制冷**，CCD 常年 38–41°C） |
 | 固件 | 9.75（≥7.18 需 RSA 互操作密钥） |
 | 站点 | `lat=22.7261, lon=114.046`（深圳龙华；site_profile 必须与此一致，否则地平遮罩失效） |
-| 设备 IP | `192.168.2.118`，电源线**从上方垂下留足余量** |
+| 设备 IP | `192.168.20.90`，电源线**从上方垂下留足余量** |
 | 拍摄窗口 | 方位角 **az 330°→110°**（跨正北，宽 140°），最低高度 **20°** |
 | 远程 | RDP 3389；ZeroTier `192.168.196.232` |
 
@@ -80,7 +80,7 @@ svchost → powershell night_watchdog.ps1 → python night_runner.py
 3. Alpaca `action` 端点**只接受 JSON body**，urlencoded 会被静默丢弃
 4. `gain` 用 `set_control_value ["gain", N]` 单独设；曝光用 `set_setting {exp_ms:{stack_l: ms}}`；`iscope_start_stack` 只接受 `{restart: bool}`
 5. 设备只允许**单一 TCP 连接**，后端在线时直接探测 4700 必然超时（正常现象）
-6. 取图：SMB 不可用（guest 拒绝），**HTTP 可用** → `http://192.168.2.118/MyWorks/...`
+6. 取图：SMB 不可用（guest 拒绝），**HTTP 可用** → `http://192.168.20.90/MyWorks/...`
 7. `get_img_file_list` 在 9.75 上不存在（code 103），须用 `get_albums`
 8. `get_albums` 返回 `{"path":"MyWorks","list":[{"group_name":"DeepSky","files":[{"name":…,"thn":…,"count":N}]}]}`；**`thn` 字段含真实滤镜名**，是验证滤镜生效最快途径
 9. 成品 FITS 扩展名只有三个字母 **`.fit`**（`.fits` 会 404）；成品 47.5 MB/个，子帧 16.6 MB/张

@@ -31,8 +31,10 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-HOST = "192.168.2.118"
-BASE = f"http://{HOST}"
+from device_ip import device_base  # sibling module; scripts are run from this dir
+
+HOST = device_base().removeprefix("http://")
+BASE = device_base()
 ALPACA = "http://127.0.0.1:5555"
 _tx = [8000]
 

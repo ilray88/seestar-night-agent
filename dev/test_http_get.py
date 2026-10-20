@@ -1,5 +1,5 @@
 ﻿import urllib.request, urllib.parse, ssl
-host = "192.168.2.118"
+host = "192.168.20.90"
 paths = [
     "/M 31/Stacked_41_M 31_20.0s_IRCUT_20261018-200814.jpg",
     "/MyWorks/M 31/Stacked_41_M 31_20.0s_IRCUT_20261018-200814.jpg",

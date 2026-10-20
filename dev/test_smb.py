@@ -5,7 +5,7 @@ try:
 except Exception as e:
     print("import fail:", e); sys.exit(1)
 
-host = "192.168.2.118"
+host = "192.168.20.90"
 # list shares
 try:
     print("--- shares ---")

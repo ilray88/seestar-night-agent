@@ -20,8 +20,10 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+from device_ip import device_base  # noqa: E402  (sibling module, run as script)
+
 ALPACA = "http://127.0.0.1:5555/api/v1/telescope/1/action"
-DEVICE = "http://192.168.2.118"
+DEVICE = device_base()
 
 # last night's targets
 TARGETS = ["M31", "IC1805", "NGC1499", "M45", "IC405", "IC443", "M81", "NGC2403"]

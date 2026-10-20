@@ -49,7 +49,7 @@ Write-Host ""
 
 Write-Host "[5/6] 望远镜连接状态"
 # 从 config.toml 动态读取当前配置的望远镜 IP，避免脚本里硬编码
-$scopeIp = '192.168.2.118'
+$scopeIp = '192.168.20.90'
 $cfgPath = Join-Path $PSScriptRoot '..\seestar_alp\device\config.toml'
 if (Test-Path $cfgPath) {
     $m = Select-String -Path $cfgPath -Pattern '^\s*ip_address\s*=\s*["'']([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)["'']' |
